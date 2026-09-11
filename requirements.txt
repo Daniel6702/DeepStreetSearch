@@ -1,2 +1,9 @@
 numpy
 opencv-python
+torch
+transformers
+accelerate
+bitsandbytes
+Pillow
+pyarrow
+tqdm

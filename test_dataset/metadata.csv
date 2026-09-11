@@ -1,0 +1,6 @@
+panoid,pano_lat,pano_lon,pano_date,query_lat,query_lon,snap_distance_m,source,source_value,image_type,yaw,pitch,fov,image_path
+2ar5YEfUFbX8AFv6lTT51A,56.21652264980573,10.28951380687832,2024-06-01,56.21633302814608,10.289561492288216,21.29,geojson,streetview_dataset/data/aarhus_kommune.geojson,panorama,,0.0,45,images/shard_000000.tar::2ar5YEfUFbX8AFv6lTT51A_360.jpg
+0VAWKt66rDhJbDplM89ylw,56.14312829877839,10.14377204335116,2026-05-01,56.14267515301002,10.143928171100505,51.307,geojson,streetview_dataset/data/aarhus_kommune.geojson,panorama,,0.0,45,images/shard_000000.tar::0VAWKt66rDhJbDplM89ylw_360.jpg
+PrVrxA2NHed-T22Zg44ltw,56.11003744226802,10.23211717608348,2026-05-01,56.110005256333295,10.232244774342199,8.683,geojson,streetview_dataset/data/aarhus_kommune.geojson,panorama,,0.0,45,images/shard_000000.tar::PrVrxA2NHed-T22Zg44ltw_360.jpg
+yta4yekBrqyM_EraKwsGwQ,56.16572845190485,10.00537680271468,2026-04-01,56.16572875270822,10.005010001861883,22.71,geojson,streetview_dataset/data/aarhus_kommune.geojson,panorama,,0.0,45,images/shard_000000.tar::yta4yekBrqyM_EraKwsGwQ_360.jpg
+Jr3Ydb4rDWh3m9_7bwrWpw,56.1041917099016,10.10569523402015,2026-04-01,56.10471860125329,10.10476493575951,82.223,geojson,streetview_dataset/data/aarhus_kommune.geojson,panorama,,0.0,45,images/shard_000000.tar::Jr3Ydb4rDWh3m9_7bwrWpw_360.jpg
