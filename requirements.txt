@@ -6,3 +6,5 @@ tqdm
 matplotlib
 vllm
 webdataset
+jupyter
+ipykernel
