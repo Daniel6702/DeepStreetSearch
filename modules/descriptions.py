@@ -75,6 +75,28 @@ class DescriptionStore:
                 descriptions,
             )
 
+    def existing_keys(
+        self,
+        panoids: Iterable[str],
+    ) -> set[tuple[str, int, int]]:
+        panoids = list(panoids)
+
+        if not panoids:
+            return set()
+
+        placeholders = ",".join("?" for _ in panoids)
+
+        rows = self.connection.execute(
+            f"""
+            SELECT panoid, subimage_index, prompt_index
+            FROM descriptions
+            WHERE panoid IN ({placeholders})
+            """,
+            panoids,
+        ).fetchall()
+
+        return set(rows)
+
     def get(
         self,
         panoid: str,

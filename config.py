@@ -1,3 +1,10 @@
+DATASET_PATH = "test_dataset/"
+
+#Panorama split settings
+NUM_VIEWS = 6
+CROP_SIZE = 1024
+OUTPUT_SIZE = 768
+
 #LVLM SETTINGS
 MODEL = "cyankiwi/Qwen3-VL-4B-Instruct-AWQ-4bit"
 MAX_TOKENS = 256
@@ -43,31 +50,3 @@ PROPMT4 = "Create a natural-language description of this location suitable for s
 "but do not claim that a visual feature is typical of the location unless that can reasonably be supported. " \
 "The description should sound like something a user might enter into a visual Earth search engine. " \
 "Do not mention Street View or the act of describing an image. Write one concise paragraph of approximately 60-130 words." 
-
-DATASET_PATH = "test_dataset/"
-
-
-
-
-
-
-
-
-
-
-UTIL_TOOL = ""
-
-if UTIL_TOOL == "RESET SQLITE DATABASE":
-    from modules.descriptions import DescriptionStore
-    from pathlib import Path
-    database_path = Path(DATASET_PATH)
-    for path in [
-        database_path,
-        Path(str(database_path) + "-wal"),
-        Path(str(database_path) + "-shm"),
-    ]:
-        if path.exists():
-            path.unlink()
-    with DescriptionStore(database_path):
-        pass
-    print(f"Reset database: {database_path}")

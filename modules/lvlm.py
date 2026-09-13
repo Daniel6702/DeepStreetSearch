@@ -22,7 +22,7 @@ class QwenVLBackend:
         *,
         tensor_parallel_size: int = 1,
         gpu_memory_utilization: float = 0.90,
-        max_model_len: int = 4096,
+        max_model_len: int | None = 4096,
         dtype: str = "auto",
         trust_remote_code: bool = True,
         mm_processor_cache_gb: int = 0,

@@ -5,10 +5,7 @@ from typing import List
 
 from PIL import Image
 
-
-NUM_VIEWS = 6
-CROP_SIZE = 1024
-OUTPUT_SIZE = 768
+from config import NUM_VIEWS, CROP_SIZE, OUTPUT_SIZE
 
 
 @dataclass
@@ -17,11 +14,7 @@ class PanoramaCrop:
     image: Image.Image
 
 
-def _circular_crop_x(
-    image: Image.Image,
-    left_px: int,
-    crop_size: int,
-) -> Image.Image:
+def _circular_crop_x(image: Image.Image, left_px: int, crop_size: int) -> Image.Image:
     """Crop horizontally with wrap-around at the panorama boundary."""
     width, height = image.size
     left_px %= width
@@ -40,16 +33,7 @@ def _circular_crop_x(
     return output
 
 
-def get_panorama_subimage(
-    panorama: Image.Image,
-    index: int,
-) -> Image.Image:
-    """
-    Return a single panorama subimage.
-
-    For a 4096x1024 panorama, the six views are centered at:
-    0, 60, 120, 180, 240, and 300 degrees.
-    """
+def get_panorama_subimage(panorama: Image.Image, index: int) -> Image.Image:
     width, height = panorama.size
 
     if height != CROP_SIZE:
