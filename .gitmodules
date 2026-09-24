@@ -1,0 +1,3 @@
+[submodule "modules/adaptive-geogrid"]
+	path = modules/adaptive-geogrid
+	url = git@github.com:Daniel6702/adaptive-geogrid.git
