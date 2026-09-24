@@ -25,10 +25,11 @@ class QwenVLBackend:
         max_model_len: int | None = 4096,
         dtype: str = "auto",
         trust_remote_code: bool = True,
-        mm_processor_cache_gb: int = 0,
+        mm_processor_cache_gb: float = 0,
         enforce_eager: bool = False,
     ) -> None:
         self.model_name = model_name
+        self._chat_prompt_cache: dict[tuple[str, str | None], str] = {}
 
         self.processor = AutoProcessor.from_pretrained(
             model_name,
@@ -53,6 +54,11 @@ class QwenVLBackend:
 
     @staticmethod
     def _prepare_image(image: Image.Image) -> Image.Image:
+        # Crops produced by panorama.py are already RGB. Returning the same
+        # object also gives vLLM's multimodal cache the best chance to reuse it
+        # across prompts.
+        if image.mode == "RGB":
+            return image
         return image.convert("RGB")
 
     def _build_chat_prompt(
@@ -60,6 +66,12 @@ class QwenVLBackend:
         prompt: str,
         system_prompt: str | None = None,
     ) -> str:
+        cache_key = (prompt, system_prompt)
+        cached = self._chat_prompt_cache.get(cache_key)
+
+        if cached is not None:
+            return cached
+
         messages: list[dict[str, Any]] = []
 
         if system_prompt:
@@ -80,11 +92,13 @@ class QwenVLBackend:
             }
         )
 
-        return self.processor.apply_chat_template(
+        chat_prompt = self.processor.apply_chat_template(
             messages,
             tokenize=False,
             add_generation_prompt=True,
         )
+        self._chat_prompt_cache[cache_key] = chat_prompt
+        return chat_prompt
 
     def generate(
         self,

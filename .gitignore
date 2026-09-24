@@ -1,8 +1,15 @@
+.hf-cache
+tools/analyze_description_lengths.py
+tools/test_description_lengths.py
+caption_length_test.slurm
+*.out
+*.err
 # Byte-compiled / optimized / DLL files
 __pycache__/
 *.py[codz]
 *$py.class
-
+description_gpu24.bash
+description_orchestrator.bash
 # C extensions
 *.so
 .omo

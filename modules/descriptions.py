@@ -21,10 +21,14 @@ class DescriptionStore:
             self.connection = sqlite3.connect(
                 f"file:{self.path.resolve()}?mode=ro",
                 uri=True,
+                timeout=60.0,
             )
         else:
             self.path.parent.mkdir(parents=True, exist_ok=True)
-            self.connection = sqlite3.connect(self.path)
+            self.connection = sqlite3.connect(
+                self.path,
+                timeout=60.0,
+            )
             self._create_table()
 
     def _create_table(self) -> None:
@@ -79,7 +83,7 @@ class DescriptionStore:
         self,
         panoids: Iterable[str],
     ) -> set[tuple[str, int, int]]:
-        panoids = list(panoids)
+        panoids = list(dict.fromkeys(panoids))
 
         if not panoids:
             return set()
