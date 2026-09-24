@@ -8,3 +8,4 @@ vllm
 webdataset
 jupyter
 ipykernel
+-e ./modules/adaptive-geogrid
