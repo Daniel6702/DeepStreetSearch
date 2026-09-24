@@ -8,3 +8,8 @@ vllm
 webdataset
 jupyter
 ipykernel
+country_converter
+pandas
+pycountry
+pycountry-convert
+reverse_geocoder
