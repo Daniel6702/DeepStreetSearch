@@ -13,3 +13,4 @@ pandas
 pycountry
 pycountry-convert
 reverse_geocoder
+-e ./modules/adaptive-geogrid

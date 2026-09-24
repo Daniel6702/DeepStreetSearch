@@ -12,14 +12,12 @@ import torch
 from PIL import Image
 from torch.utils.data import DataLoader, IterableDataset, get_worker_info
 
-
 IMAGE_EXTENSIONS = {
     ".jpg",
     ".jpeg",
     ".png",
     ".webp",
 }
-
 
 def _collate_batch(batch):
     """Keep images as PIL images and metadata as dictionaries."""
@@ -54,11 +52,7 @@ def _image_key(filename: str) -> str:
     return key
 
 
-def _buffer_shuffle(
-    iterator: Iterator,
-    buffer_size: int,
-    rng: random.Random,
-):
+def _buffer_shuffle(iterator: Iterator, buffer_size: int, rng: random.Random):
     """Streaming shuffle without loading the entire dataset into memory."""
     if buffer_size <= 1:
         yield from iterator
@@ -180,11 +174,7 @@ class PanoramaDataset(IterableDataset):
 
         return metadata
 
-    def _make_sample(
-        self,
-        filename: str,
-        image: Image.Image,
-    ):
+    def _make_sample(self, filename: str, image: Image.Image):
         key = _image_key(filename)
         metadata = self.metadata.get(key)
 
