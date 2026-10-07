@@ -24,7 +24,7 @@ def parse_args() -> argparse.Namespace:
         "--prompts",
         type=int,
         nargs="+",
-        default=[1, 2],
+        default=[3, 4],
         help="Prompt numbers being generated. Default: 1 2",
     )
     parser.add_argument(

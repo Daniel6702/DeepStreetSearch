@@ -124,7 +124,7 @@ class QwenVLBackend:
     def generate_batch(
         self,
         images: Sequence[Image.Image],
-        prompt: str,
+        prompt: str | Sequence[str],
         *,
         system_prompt: str | None = None,
         max_tokens: int = 128,
@@ -135,19 +135,27 @@ class QwenVLBackend:
         if not images:
             return []
 
-        chat_prompt = self._build_chat_prompt(
-            prompt,
-            system_prompt=system_prompt,
-        )
+        if isinstance(prompt, str):
+            prompts = [prompt] * len(images)
+        else:
+            prompts = list(prompt)
+            if len(prompts) != len(images):
+                raise ValueError(
+                    f"Expected one prompt per image: got {len(prompts)} prompts "
+                    f"for {len(images)} images"
+                )
 
         vllm_inputs = [
             {
-                "prompt": chat_prompt,
+                "prompt": self._build_chat_prompt(
+                    image_prompt,
+                    system_prompt=system_prompt,
+                ),
                 "multi_modal_data": {
                     "image": self._prepare_image(image),
                 },
             }
-            for image in images
+            for image, image_prompt in zip(images, prompts)
         ]
 
         sampling_params = SamplingParams(
@@ -166,7 +174,7 @@ class QwenVLBackend:
             LVLMResponse(
                 text=output.outputs[0].text.strip(),
                 model_name=self.model_name,
-                prompt=prompt,
+                prompt=image_prompt,
             )
-            for output in outputs
+            for output, image_prompt in zip(outputs, prompts)
         ]

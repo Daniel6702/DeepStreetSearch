@@ -2,7 +2,9 @@
 tools/analyze_description_lengths.py
 tools/test_description_lengths.py
 caption_length_test.slurm
+description_gpu48.bash
 *.out
+.bash
 *.err
 # Byte-compiled / optimized / DLL files
 __pycache__/
@@ -15,7 +17,7 @@ description_orchestrator.bash
 .omo
 dataset/
 *.sqlite
-
+grid.bash
 # Distribution / packaging
 .Python
 build/

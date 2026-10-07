@@ -12,7 +12,7 @@ def parse_args():
     parser = argparse.ArgumentParser()
     parser.add_argument("--dataset", help="Dataset root containing metadata.csv", default="/home/austen/Street-View-Harvester/datasets/world")
     parser.add_argument("--boundary", help="GeoJSON boundary used for the grid", default="grids/ne_10m_land.geojson")
-    parser.add_argument("--output", default="grids/world_full.aggrid", help="Output .aggrid file")
+    parser.add_argument("--output", default="grids/world.aggrid", help="Output .aggrid file")
     parser.add_argument("--target-points", type=int, default=200, help="Approximate panoramas per fine cell")
     parser.add_argument("--levels", type=int, default=5, help="Number of coarser hierarchy levels")
     parser.add_argument("--branching-factor", type=int, default=3, help="Children per parent level")
@@ -46,12 +46,20 @@ def main():
     points = points[:1_000_000]
     print(f"Building grid from {len(points):,} unique panorama locations")
     #geodesic_grid_size
+
     grid = tessellate(
         points=points,
         boundary=args.boundary,
         target_points=args.target_points,
         mode=args.mode,
+
         geodesic_grid_size=8192,
+        geodesic_optimization_grid_size=2048,
+        geodesic_large_k_solver="weighted",
+
+        geodesic_workers=8,
+        geodesic_accelerator="cpu",
+
         projected_crs=args.projected_crs,
         verbose=True,
     )

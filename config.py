@@ -1,5 +1,8 @@
 DATASET_PATH = "test_dataset/"
 
+NUM_GEO_CLASSES = 5000
+NUM_EMBED_CLASSES = 768
+
 #Panorama split settings
 NUM_VIEWS = 6
 CROP_SIZE = 1024
@@ -40,7 +43,10 @@ PROMPT3 = (
     "Focus on terrain, elevation, vegetation, openness, land use, settlement density, surrounding landscape, "
     "and relationships between roads, buildings, fields, water, forests, hills, or mountains. "
     "Only include characteristics supported by visible evidence. "
+    "Mention specifics that uniquely and or distinctly describe this exact place."
     "Write one dense natural description of approximately 40-45 words."
+    "I will provide you with the location at the end. You may mention it and or include in the describtion if it makes sense to do so." \
+    "Location: "
 )
 
 # Search-style description with geographic context
@@ -48,7 +54,23 @@ PROMPT4 = (
     "Write a concise search query for finding visually similar places. "
     "Combine the supplied geographic context with the most distinctive visible characteristics, such as architecture, "
     "road design, infrastructure, vegetation, terrain, density, and scene layout. "
-    "Use natural wording a person might realistically enter into an Earth search engine. "
-    f"The location name is [NAME]. Include that somehow in the output. You may work it in naturally into the sentence."
-    "Do not add unsupported claims. Write approximately 40-45 words."
+    "Mention specifics that uniquely and or distinctly describe this exact place."
+    "Use natural wording a person might realistically enter into a geographic image search engine. "
+    "Do not add unsupported visual claims. Write approximately 50-60 words. "
+
+    "Output only the search query itself. Do not write introductory phrases such as 'Search for', 'Find', or 'Look for'. "
+    "Do not use quotation marks or explain the query. "
+
+    "A hierarchical geographic location will be provided at the end. Every supplied location component must be mentioned "
+    "in the output; do not omit or replace any part of it. Incorporate the location naturally and geographically correctly. "
+    "You may additionally mention a better-known nearby city, landmark, mountain range, coast, or geographic area when it "
+    "makes the location easier to understand or search for. Such additions must supplement the supplied location, never "
+    "replace it, and must have a genuine geographic relationship to it. "
+
+    "Prefer precise spatial wording. Use 'in' for places contained within the supplied region and 'near' only for features "
+    "that are actually nearby. For example, a scene in Provence-Alpes-Côte d'Azur may be described as being "
+    "'in Provence-Alpes-Côte d'Azur, France, Western Europe, Europe, near the Alps', rather than "
+    "'near Provence-Alpes-Côte d'Azur'. "
+
+    "Location: "
 )

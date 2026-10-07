@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import csv
 import hashlib
 import json
 import os
@@ -37,9 +38,12 @@ from modules.descriptions import DescriptionStore
 
 PROMPTS = [PROMPT1, PROMPT2, PROMPT3, PROMPT4]
 
-# Changing this deliberately gives the new storage layout a different run
-# signature from older smoke tests that wrote to one global SQLite database.
-STORAGE_VERSION = "per-shard-sqlite-v1"
+# Bump when run semantics change in a way that must not reuse old done markers.
+STORAGE_VERSION = "per-shard-sqlite-v2-location-context"
+
+LOCATION_PROMPT_INDICES = {2, 3}
+LOCATION_COLUMNS = ("admin1", "country", "subregion", "continent")
+LOCATION_METADATA_KEY = "_location_name"
 
 
 def _select_prompts(prompt_numbers: Sequence[int]) -> list[tuple[int, str]]:
@@ -233,6 +237,10 @@ def _run_signature(selected_prompts: Sequence[tuple[int, str]]) -> str:
         "num_views": NUM_VIEWS,
         "crop_size": CROP_SIZE,
         "output_size": OUTPUT_SIZE,
+        "location_context": {
+            "prompt_indices": sorted(LOCATION_PROMPT_INDICES),
+            "columns": LOCATION_COLUMNS,
+        },
     }
     encoded = json.dumps(
         payload,
@@ -251,6 +259,17 @@ def parse_args() -> argparse.Namespace:
         type=Path,
         default=Path(DATASET_PATH),
         help="Dataset root containing metadata.csv and images/shard_*.tar|zip.",
+    )
+    parser.add_argument(
+        "--location-metadata",
+        type=Path,
+        default=None,
+        help=(
+            "Geocoded metadata CSV containing panoid, admin1, country, "
+            "subregion, and continent. Defaults to "
+            "<dataset>/metadata_geocoded.csv. Required when running prompts "
+            "3 or 4."
+        ),
     )
     parser.add_argument(
         "--database",
@@ -322,6 +341,64 @@ def parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
+def _attach_location_names(
+    metadata: dict[str, dict[str, str]],
+    location_metadata_path: Path,
+) -> None:
+    if not location_metadata_path.exists():
+        raise FileNotFoundError(location_metadata_path)
+
+    matched = 0
+
+    with location_metadata_path.open(
+        "r",
+        newline="",
+        encoding="utf-8",
+    ) as f:
+        reader = csv.DictReader(f)
+        required_columns = {"panoid", *LOCATION_COLUMNS}
+        missing_columns = required_columns - set(reader.fieldnames or [])
+
+        if missing_columns:
+            raise ValueError(
+                f"{location_metadata_path} is missing required columns: "
+                f"{sorted(missing_columns)}"
+            )
+
+        for row in reader:
+            panoid = row["panoid"]
+            sample_metadata = metadata.get(panoid)
+
+            if sample_metadata is None:
+                continue
+
+            location_name = ", ".join(
+                row[column].strip()
+                for column in LOCATION_COLUMNS
+            )
+
+            sample_metadata[LOCATION_METADATA_KEY] = location_name
+            matched += 1
+
+    missing_panoids = [
+        panoid
+        for panoid, sample_metadata in metadata.items()
+        if LOCATION_METADATA_KEY not in sample_metadata
+    ]
+
+    if missing_panoids:
+        preview = ", ".join(missing_panoids[:5])
+        raise ValueError(
+            f"Location metadata is missing {len(missing_panoids):,} dataset "
+            f"panoids. First missing: {preview}"
+        )
+
+    print(
+        f"Location metadata: {location_metadata_path} "
+        f"({matched:,} panoids matched)"
+    )
+
+
 def _close_crops(crops_batch) -> None:
     for crops in crops_batch:
         for crop in crops:
@@ -341,9 +418,13 @@ def process_batch(
     panoids = [metadata["panoid"] for metadata in metadata_batch]
     existing = store.existing_keys(panoids)
 
-    crops_by_panoid = {
-        panoid: crops
-        for panoid, crops in zip(panoids, crops_batch)
+    batch_by_panoid = {
+        panoid: (crops, sample_metadata)
+        for panoid, crops, sample_metadata in zip(
+            panoids,
+            crops_batch,
+            metadata_batch,
+        )
         if not all(
             (panoid, subimage_index, prompt_index) in existing
             for subimage_index in range(NUM_VIEWS)
@@ -356,15 +437,29 @@ def process_batch(
     try:
         for prompt_index, prompt in prompts:
             request_images = []
+            request_prompts = []
             request_keys = []
 
-            for panoid, crops in crops_by_panoid.items():
+            for panoid, (crops, sample_metadata) in batch_by_panoid.items():
+                effective_prompt = prompt
+
+                if prompt_index in LOCATION_PROMPT_INDICES:
+                    try:
+                        location_name = sample_metadata[LOCATION_METADATA_KEY]
+                    except KeyError as exc:
+                        raise KeyError(
+                            f"No location metadata attached for panoid={panoid!r}"
+                        ) from exc
+
+                    effective_prompt = prompt + location_name
+
                 for crop in crops:
                     key = (panoid, crop.subimage_index, prompt_index)
                     if key in existing:
                         continue
 
                     request_images.append(crop.image)
+                    request_prompts.append(effective_prompt)
                     request_keys.append(key)
 
             if not request_images:
@@ -372,7 +467,7 @@ def process_batch(
 
             responses = backend.generate_batch(
                 images=request_images,
-                prompt=prompt,
+                prompt=request_prompts,
                 max_tokens=MAX_TOKENS,
                 temperature=TEMPERATURE,
                 top_p=TOP_P,
@@ -395,7 +490,7 @@ def process_batch(
             generated += len(rows)
             claimer.heartbeat(claim_path)
 
-            del responses, request_images, request_keys
+            del responses, request_images, request_prompts, request_keys
 
             if stop.value:
                 break
@@ -492,6 +587,11 @@ def main() -> int:
     from modules.lvlm import QwenVLBackend
 
     dataset_root = args.dataset.resolve()
+    location_metadata_path = (
+        args.location_metadata.resolve()
+        if args.location_metadata is not None
+        else dataset_root / "metadata_geocoded.csv"
+    )
     database_override = (
         args.database.resolve()
         if args.database is not None
@@ -521,6 +621,11 @@ def main() -> int:
     print(f"Model:     {MODEL}")
     prompt_numbers = [prompt_index + 1 for prompt_index, _ in selected_prompts]
     print(f"Prompts:   {prompt_numbers} ({len(selected_prompts)} selected)")
+    if any(
+        prompt_index in LOCATION_PROMPT_INDICES
+        for prompt_index, _ in selected_prompts
+    ):
+        print(f"Locations: {location_metadata_path}")
     print(f"Batch:     {args.batch_size} panoramas")
     print(
         f"Loader:    {args.loader_workers} requested worker(s), "
@@ -533,6 +638,15 @@ def main() -> int:
         dataset_root,
         exclude_columns=EXCLUDE_COLUMNS,
     )
+
+    if any(
+        prompt_index in LOCATION_PROMPT_INDICES
+        for prompt_index, _ in selected_prompts
+    ):
+        _attach_location_names(
+            metadata=metadata,
+            location_metadata_path=location_metadata_path,
+        )
 
     stop = StopRequested()
     signal.signal(signal.SIGINT, stop.request)

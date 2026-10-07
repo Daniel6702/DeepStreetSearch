@@ -25,7 +25,7 @@ def cc_to_continent(cc_code):
 
 def main():
     SCRIPT_DIR = Path(__file__).resolve().parent
-    csv_path = SCRIPT_DIR.parent / "test_dataset" / "metadata.csv"
+    csv_path = "/home/austen/Street-View-Harvester/datasets/world/metadata_full.csv"
 
     df = pd.read_csv(
         csv_path,
@@ -39,27 +39,30 @@ def main():
     results = rg.search(coords)
 
     geo_df = pd.DataFrame(results)
-    df["admin2"] = geo_df["admin2"]
-    df["country_code"] = geo_df["cc"]
+    df["admin1"] = geo_df["admin1"]
+    #df["country_code"] = geo_df["cc"]
 
     # Country name and continent (cached lookups for speed)
-    unique_ccs = df["country_code"].unique()
+    unique_ccs = geo_df["cc"].unique()
     name_map = {c: cc_to_country_name(c) for c in unique_ccs}
     continent_map = {c: cc_to_continent(c) for c in unique_ccs}
-    df["country"] = df["country_code"].map(name_map)
-    df["continent"] = df["country_code"].map(continent_map)
+    df["country"] = geo_df["cc"].map(name_map)
 
     # Sub-region, e.g. "Northern Europe", "Western Asia" (UN M49 geoscheme)
     converter = coco.CountryConverter()
     subregion_map = {c: converter.convert(names=c, src="ISO2", to="UNregion") for c in unique_ccs}
-    df["subregion"] = df["country_code"].map(subregion_map)
+    df["subregion"] = geo_df["cc"].map(subregion_map)
+
+    df["continent"] = geo_df["cc"].map(continent_map)
+
+
 
     # Drop raw coordinates now that geocoding is done
     df = df.drop(columns=["pano_lat", "pano_lon"])
     # Uncomment only if you're sure you don't need to link back to images:
     df = df.drop(columns=["image_path"])
 
-    df.to_csv(SCRIPT_DIR.parent / "test_dataset" / "metadata_with_geo.csv", index=False)
+    df.to_csv("/home/austen/Street-View-Harvester/datasets/world/metadata_geocoded.csv")
     print(f"Done. Processed {len(df)} rows.")
 
 if __name__ == "__main__":

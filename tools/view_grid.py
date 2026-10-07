@@ -3,7 +3,7 @@ import matplotlib.pyplot as plt
 from modules.dataset import PanoramaDataset
 import numpy as np
 
-grid = load_grid("grids/world_full.aggrid")
+grid = load_grid("grids/world.aggrid")
 
 metadata = PanoramaDataset.load_metadata("/home/austen/Street-View-Harvester/datasets/world")
 
