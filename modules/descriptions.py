@@ -149,6 +149,56 @@ class DescriptionStore:
             for prompt_index, description in rows
         }
 
+
+    def sample_many(
+        self,
+        crop_keys: Iterable[tuple[str, int]],
+        rng,
+        prompt_indices: Iterable[int] | None = None,
+    ) -> dict[tuple[str, int], str]:
+        """Sample one stored prompt description for each panorama crop."""
+        crop_keys = list(dict.fromkeys(crop_keys))
+        if not crop_keys:
+            return {}
+
+        panoids = list(dict.fromkeys(panoid for panoid, _ in crop_keys))
+        pano_placeholders = ",".join("?" for _ in panoids)
+        params: list[object] = list(panoids)
+        prompt_clause = ""
+
+        if prompt_indices is not None:
+            prompt_indices = list(dict.fromkeys(prompt_indices))
+            if not prompt_indices:
+                raise ValueError("prompt_indices cannot be empty")
+            prompt_placeholders = ",".join("?" for _ in prompt_indices)
+            prompt_clause = f" AND prompt_index IN ({prompt_placeholders})"
+            params.extend(prompt_indices)
+
+        rows = self.connection.execute(
+            f"""
+            SELECT panoid, subimage_index, description
+            FROM descriptions
+            WHERE panoid IN ({pano_placeholders})
+            {prompt_clause}
+            """,
+            params,
+        ).fetchall()
+
+        candidates: dict[tuple[str, int], list[str]] = {key: [] for key in crop_keys}
+        for panoid, subimage_index, description in rows:
+            key = (panoid, subimage_index)
+            if key in candidates:
+                candidates[key].append(description)
+
+        missing = [key for key, values in candidates.items() if not values]
+        if missing:
+            preview = ", ".join(f"{panoid}[crop {index}]" for panoid, index in missing[:5])
+            raise KeyError(
+                f"No descriptions found in {self.path} for {len(missing)} crop(s): {preview}"
+            )
+
+        return {key: rng.choice(candidates[key]) for key in crop_keys}
+
     def close(self) -> None:
         self.connection.close()
 

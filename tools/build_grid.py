@@ -7,7 +7,6 @@ import numpy as np
 from adaptive_geogrid import tessellate
 from modules.dataset import PanoramaDataset
 
-
 def parse_args():
     parser = argparse.ArgumentParser()
     parser.add_argument("--dataset", help="Dataset root containing metadata.csv", default="/home/austen/Street-View-Harvester/datasets/world")
@@ -19,7 +18,6 @@ def parse_args():
     parser.add_argument("--mode", default="geodesic", choices=["power", "warped", "geodesic", "graph"])
     parser.add_argument("--projected-crs", default="EPSG:8857", help="Projected CRS, e.g. EPSG:8857 for worldwide grids")
     return parser.parse_args()
-
 
 def main():
     args = parse_args()

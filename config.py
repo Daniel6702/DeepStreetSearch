@@ -1,7 +1,6 @@
-DATASET_PATH = "test_dataset/"
+DATASET_PATH = "/home/austen/Street-View-Harvester/datasets"
 
-NUM_GEO_CLASSES = 5000
-NUM_EMBED_CLASSES = 768
+SIGLIP_MODEL = "google/siglip2-base-patch16-512"
 
 #Panorama split settings
 NUM_VIEWS = 6

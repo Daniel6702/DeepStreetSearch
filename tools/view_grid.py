@@ -29,11 +29,11 @@ points = points[:10000]
 print(f"Building grid from {len(points):,} unique panorama locations")
 
 ax = grid.plot(
-    levels=[0,1,2],
+    levels=[0,1,2,3,4],
     points=points,
-    point_sample=10_000,
-    linewidth=0.1,
-    boundary_linewidth=0.25,
+    point_sample=0,
+    linewidth=0.05,
+    boundary_linewidth=0.15,
     hierarchy_lane_alpha=0.82,
     hierarchy_lane_gap=0.0,
     point_size=0.05,
