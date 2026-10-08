@@ -150,54 +150,62 @@ class DescriptionStore:
         }
 
 
-    def sample_many(
+    def get_many(
         self,
         crop_keys: Iterable[tuple[str, int]],
-        rng,
-        prompt_indices: Iterable[int] | None = None,
-    ) -> dict[tuple[str, int], str]:
-        """Sample one stored prompt description for each panorama crop."""
+        prompt_indices: Iterable[int],
+    ) -> dict[tuple[str, int], list[str]]:
+        """Load the requested prompt descriptions for each panorama crop."""
         crop_keys = list(dict.fromkeys(crop_keys))
+        prompt_indices = list(dict.fromkeys(prompt_indices))
+
         if not crop_keys:
             return {}
+        if not prompt_indices:
+            raise ValueError("prompt_indices cannot be empty")
 
         panoids = list(dict.fromkeys(panoid for panoid, _ in crop_keys))
         pano_placeholders = ",".join("?" for _ in panoids)
-        params: list[object] = list(panoids)
-        prompt_clause = ""
-
-        if prompt_indices is not None:
-            prompt_indices = list(dict.fromkeys(prompt_indices))
-            if not prompt_indices:
-                raise ValueError("prompt_indices cannot be empty")
-            prompt_placeholders = ",".join("?" for _ in prompt_indices)
-            prompt_clause = f" AND prompt_index IN ({prompt_placeholders})"
-            params.extend(prompt_indices)
+        prompt_placeholders = ",".join("?" for _ in prompt_indices)
 
         rows = self.connection.execute(
             f"""
-            SELECT panoid, subimage_index, description
+            SELECT panoid, subimage_index, prompt_index, description
             FROM descriptions
             WHERE panoid IN ({pano_placeholders})
-            {prompt_clause}
+              AND prompt_index IN ({prompt_placeholders})
+            ORDER BY panoid, subimage_index, prompt_index
             """,
-            params,
+            [*panoids, *prompt_indices],
         ).fetchall()
 
-        candidates: dict[tuple[str, int], list[str]] = {key: [] for key in crop_keys}
-        for panoid, subimage_index, description in rows:
-            key = (panoid, subimage_index)
-            if key in candidates:
-                candidates[key].append(description)
+        requested_keys = set(crop_keys)
+        descriptions: dict[tuple[str, int], dict[int, str]] = {key: {} for key in crop_keys}
 
-        missing = [key for key, values in candidates.items() if not values]
+        for panoid, subimage_index, prompt_index, description in rows:
+            key = (panoid, subimage_index)
+            if key in requested_keys:
+                descriptions[key][prompt_index] = description
+
+        missing = [
+            (panoid, subimage_index, prompt_index)
+            for panoid, subimage_index in crop_keys
+            for prompt_index in prompt_indices
+            if prompt_index not in descriptions[(panoid, subimage_index)]
+        ]
         if missing:
-            preview = ", ".join(f"{panoid}[crop {index}]" for panoid, index in missing[:5])
+            preview = ", ".join(
+                f"{panoid}[crop {subimage_index}, prompt {prompt_index + 1}]"
+                for panoid, subimage_index, prompt_index in missing[:5]
+            )
             raise KeyError(
-                f"No descriptions found in {self.path} for {len(missing)} crop(s): {preview}"
+                f"Missing {len(missing)} requested description(s) in {self.path}: {preview}"
             )
 
-        return {key: rng.choice(candidates[key]) for key in crop_keys}
+        return {
+            key: [descriptions[key][prompt_index] for prompt_index in prompt_indices]
+            for key in crop_keys
+        }
 
     def close(self) -> None:
         self.connection.close()

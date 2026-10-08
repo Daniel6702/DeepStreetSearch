@@ -56,26 +56,41 @@ class HierarchicalGeographicLoss(nn.Module):
 
 
 class SiglipContrastiveLoss(nn.Module):
-    """Native SigLIP pairwise sigmoid contrastive objective."""
+    """SigLIP pairwise sigmoid objective with multiple texts per image."""
 
     def forward(
         self,
         image_embeddings: torch.Tensor,
         text_embeddings: torch.Tensor,
+        positive_image_indices: torch.Tensor,
         logit_scale: torch.Tensor,
         logit_bias: torch.Tensor,
     ) -> torch.Tensor:
-        if image_embeddings.shape != text_embeddings.shape:
+        if image_embeddings.ndim != 2 or text_embeddings.ndim != 2:
+            raise ValueError("Image and text embeddings must both have shape [items, dim]")
+        if image_embeddings.shape[1] != text_embeddings.shape[1]:
             raise ValueError(
-                "Image and text embeddings must have matching [batch, dim] shapes, "
-                f"got {tuple(image_embeddings.shape)} and {tuple(text_embeddings.shape)}"
+                "Image and text embedding dimensions must match, "
+                f"got {image_embeddings.shape[1]} and {text_embeddings.shape[1]}"
             )
+        if positive_image_indices.shape != (text_embeddings.shape[0],):
+            raise ValueError(
+                "positive_image_indices must contain one image index per text embedding, "
+                f"got {tuple(positive_image_indices.shape)} for {text_embeddings.shape[0]} texts"
+            )
+
+        positive_image_indices = positive_image_indices.to(image_embeddings.device, non_blocking=True)
+        if positive_image_indices.numel() and (
+            positive_image_indices.min() < 0 or positive_image_indices.max() >= image_embeddings.shape[0]
+        ):
+            raise ValueError("positive_image_indices contains an out-of-range image index")
 
         logits = text_embeddings @ image_embeddings.T
         logits = logits * logit_scale.exp() + logit_bias
 
         signs = -torch.ones_like(logits)
-        signs.fill_diagonal_(1.0)
+        text_indices = torch.arange(text_embeddings.shape[0], device=logits.device)
+        signs[text_indices, positive_image_indices] = 1.0
 
         return -F.logsigmoid(signs * logits).sum(dim=-1).mean()
 
@@ -106,11 +121,12 @@ class DeepStreetSearchLoss(nn.Module):
         labels: torch.Tensor,
         image_embeddings: torch.Tensor,
         text_embeddings: torch.Tensor,
+        positive_image_indices: torch.Tensor,
         logit_scale: torch.Tensor,
         logit_bias: torch.Tensor,
     ) -> tuple[torch.Tensor, dict[str, torch.Tensor]]:
         geographic = self.geographic(geo_logits, labels)
-        contrastive = self.contrastive(image_embeddings, text_embeddings, logit_scale, logit_bias)
+        contrastive = self.contrastive(image_embeddings, text_embeddings, positive_image_indices, logit_scale, logit_bias)
 
         total = self.geographic_weight * geographic + self.contrastive_weight * contrastive
         return total, {

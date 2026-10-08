@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import random
 from pathlib import Path
 
 import torch
@@ -54,7 +53,6 @@ class TrainingBatchCollator:
         self.prompt_indices = prompt_indices
         self.processor = None
         self.stores: dict[Path, DescriptionStore] = {}
-        self.rng = None
 
     def _get_processor(self):
         if self.processor is None:
@@ -62,11 +60,6 @@ class TrainingBatchCollator:
 
             self.processor = AutoProcessor.from_pretrained(self.model_name)
         return self.processor
-
-    def _get_rng(self):
-        if self.rng is None:
-            self.rng = random.Random(torch.initial_seed())
-        return self.rng
 
     def _database_path(self, metadata: dict[str, str]) -> Path:
         if self.descriptions.is_file():
@@ -84,7 +77,11 @@ class TrainingBatchCollator:
             self.stores[path] = store
         return store
 
-    def _sample_descriptions(self, metadata: list[dict[str, str]], crops_batch) -> list[str]:
+    def _load_descriptions(
+        self,
+        metadata: list[dict[str, str]],
+        crops_batch,
+    ) -> tuple[list[str], torch.Tensor]:
         by_database: dict[Path, list[tuple[str, int]]] = {}
         ordered_keys: list[tuple[str, int]] = []
 
@@ -98,14 +95,22 @@ class TrainingBatchCollator:
             by_database.setdefault(database_path, []).extend(keys)
             ordered_keys.extend(keys)
 
-        sampled: dict[tuple[str, int], str] = {}
-        rng = self._get_rng()
+        prompt_indices = self.prompt_indices if self.prompt_indices is not None else [0, 1, 2, 3]
+        loaded: dict[tuple[str, int], list[str]] = {}
 
         for database_path, crop_keys in by_database.items():
             store = self._get_store(database_path)
-            sampled.update(store.sample_many(crop_keys, rng, self.prompt_indices))
+            loaded.update(store.get_many(crop_keys, prompt_indices))
 
-        return [sampled[key] for key in ordered_keys]
+        descriptions = []
+        positive_image_indices = []
+
+        for image_index, key in enumerate(ordered_keys):
+            for description in loaded[key]:
+                descriptions.append(description)
+                positive_image_indices.append(image_index)
+
+        return descriptions, torch.tensor(positive_image_indices, dtype=torch.long)
 
     def __call__(self, batch):
         panoramas, metadata = zip(*batch)
@@ -122,7 +127,7 @@ class TrainingBatchCollator:
                 finally:
                     panorama.close()
 
-            descriptions = self._sample_descriptions(metadata, crops_batch)
+            descriptions, positive_image_indices = self._load_descriptions(metadata, crops_batch)
             processor = self._get_processor()
 
             processed_images = processor(images=views, return_tensors="pt")
@@ -139,6 +144,6 @@ class TrainingBatchCollator:
                     "Construct PanoramaDataset with grid=... before creating the training loader."
                 ) from exc
 
-            return image_inputs, text_inputs, labels, metadata, NUM_VIEWS
+            return image_inputs, text_inputs, labels, positive_image_indices, metadata, NUM_VIEWS
         finally:
             close_prepared_crops(crops_batch)

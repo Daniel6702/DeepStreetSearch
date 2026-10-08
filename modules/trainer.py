@@ -28,10 +28,11 @@ class Trainer:
 
         progress = tqdm(self.loader, desc="Training", dynamic_ncols=True)
 
-        for image_inputs, text_inputs, labels, metadata, num_views in progress:
+        for image_inputs, text_inputs, labels, positive_image_indices, metadata, num_views in progress:
             image_inputs = self._to_device(image_inputs)
             text_inputs = self._to_device(text_inputs)
             labels = labels.to(self.device, non_blocking=True)
+            positive_image_indices = positive_image_indices.to(self.device, non_blocking=True)
             batch_size = len(metadata)
 
             optimizer.zero_grad(set_to_none=True)
@@ -52,10 +53,11 @@ class Trainer:
                     labels,
                     image_embeddings,
                     text_embeddings,
+                    positive_image_indices,
                     self.model.logit_scale,
                     self.model.logit_bias,
                 )
-
+            
             loss.backward()
             optimizer.step()
 
