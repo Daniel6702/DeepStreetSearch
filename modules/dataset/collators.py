@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import random
 from pathlib import Path
 
 import torch
@@ -47,10 +48,14 @@ class TrainingBatchCollator:
         model_name: str,
         descriptions: str | Path,
         prompt_indices: list[int] | None = None,
+        description_mode: str = "all",
     ):
         self.model_name = model_name
         self.descriptions = Path(descriptions)
+        if description_mode not in ("all", "random"):
+            raise ValueError("description_mode must be 'all' or 'random'")
         self.prompt_indices = prompt_indices
+        self.description_mode = description_mode
         self.processor = None
         self.stores: dict[Path, DescriptionStore] = {}
 
@@ -106,9 +111,11 @@ class TrainingBatchCollator:
         positive_image_indices = []
 
         for image_index, key in enumerate(ordered_keys):
-            for description in loaded[key]:
-                descriptions.append(description)
-                positive_image_indices.append(image_index)
+            crop_descriptions = loaded[key]
+            if self.description_mode == "random":
+                crop_descriptions = [random.choice(crop_descriptions)]
+            descriptions.extend(crop_descriptions)
+            positive_image_indices.extend([image_index] * len(crop_descriptions))
 
         return descriptions, torch.tensor(positive_image_indices, dtype=torch.long)
 

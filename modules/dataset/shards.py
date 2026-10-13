@@ -57,12 +57,15 @@ def _buffer_shuffle(iterator: Iterator[T], buffer_size: int, rng: random.Random)
     yield from buffer
 
 
-def _iter_tar(shard_path: str, shuffle_buffer: int, rng: random.Random | None) -> Iterator[tuple[str, Image.Image]]:
+def _iter_tar(
+    shard_path: str, shuffle_buffer: int, rng: random.Random | None, allowed_keys: set[str] | None
+) -> Iterator[tuple[str, Image.Image]]:
     with tarfile.open(shard_path, mode="r:*") as archive:
         members = (
             member
             for member in archive
             if member.isfile() and Path(member.name).suffix.lower() in IMAGE_EXTENSIONS
+            and (allowed_keys is None or image_key(member.name) in allowed_keys)
         )
         if rng is not None:
             members = _buffer_shuffle(members, shuffle_buffer, rng)
@@ -78,12 +81,15 @@ def _iter_tar(shard_path: str, shuffle_buffer: int, rng: random.Random | None) -
             yield member.name, image
 
 
-def _iter_zip(shard_path: str, shuffle_buffer: int, rng: random.Random | None) -> Iterator[tuple[str, Image.Image]]:
+def _iter_zip(
+    shard_path: str, shuffle_buffer: int, rng: random.Random | None, allowed_keys: set[str] | None
+) -> Iterator[tuple[str, Image.Image]]:
     with zipfile.ZipFile(shard_path, mode="r") as archive:
         members = (
             member
             for member in archive.infolist()
             if not member.is_dir() and Path(member.filename).suffix.lower() in IMAGE_EXTENSIONS
+            and (allowed_keys is None or image_key(member.filename) in allowed_keys)
         )
         if rng is not None:
             members = _buffer_shuffle(members, shuffle_buffer, rng)
@@ -99,11 +105,12 @@ def iter_shard_images(
     shard_path: str,
     shuffle_buffer: int = 1,
     rng: random.Random | None = None,
+    allowed_keys: set[str] | None = None,
 ) -> Iterator[tuple[str, Image.Image]]:
     suffix = Path(shard_path).suffix.lower()
     if suffix == ".tar":
-        yield from _iter_tar(shard_path, shuffle_buffer, rng)
+        yield from _iter_tar(shard_path, shuffle_buffer, rng, allowed_keys)
     elif suffix == ".zip":
-        yield from _iter_zip(shard_path, shuffle_buffer, rng)
+        yield from _iter_zip(shard_path, shuffle_buffer, rng, allowed_keys)
     else:
         raise ValueError(f"Unsupported shard format: {shard_path}")
