@@ -88,7 +88,7 @@ class SiglipContrastiveLoss(nn.Module):
         logits = text_embeddings @ image_embeddings.T
         logits = logits * logit_scale.exp() + logit_bias
 
-        signs = -torch.ones_like(logits)
+        signs = -torch.ones_like(logits) 
         text_indices = torch.arange(text_embeddings.shape[0], device=logits.device)
         signs[text_indices, positive_image_indices] = 1.0
 

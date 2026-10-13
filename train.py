@@ -105,6 +105,5 @@ def main():
         )
         trainer.save_checkpoint(optimizer, epoch, args.checkpoint)
 
-
 if __name__ == "__main__":
     main()
