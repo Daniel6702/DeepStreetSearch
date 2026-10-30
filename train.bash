@@ -21,7 +21,7 @@ export PYTHONUNBUFFERED=1
 
 python -u train.py \
     --grid grids/world.aggrid \
-    --dataset-fraction 0.05 \
+    --dataset-fraction 1.0 \
     --seed 42 \
     --epochs 10 \
     --batch-size 4 \
@@ -31,6 +31,7 @@ python -u train.py \
     --lr-scheduler cosine \
     --warmup-ratio 0.02 \
     --max-grad-norm 1.0 \
-    --checkpoint checkpoints/deepstreetsearch.pt
+    --checkpoint checkpoints/deepstreetsearchFULL.pt
 
 date
+    

@@ -1,3 +1,5 @@
+results
+checkpoints
 .hf-cache
 tools/analyze_description_lengths.py
 tools/test_description_lengths.py
