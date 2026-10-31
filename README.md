@@ -39,8 +39,8 @@ The description filenames match the per-shard databases produced by `tools/descr
 ```bash
 python tools/build_grid.py \
     --dataset datasets/world \
-    --boundary grids/ne_10m_land.geojson \
-    --output grids/world.aggrid
+    --boundary outputs/grids/ne_10m_land.geojson \
+    --output outputs/grids/world.aggrid
 ```
 
 ## Train
@@ -48,7 +48,7 @@ python tools/build_grid.py \
 ```bash
 python train.py \
     --dataset datasets/world \
-    --grid grids/world.aggrid \
+    --grid outputs/grids/world.aggrid \
     --batch-size 4 \
     --workers 4
 ```
@@ -71,7 +71,7 @@ Training on a reproducible 5% subset with cosine LR decay, linear warmup, and gr
 ```bash
 python train.py \
     --dataset datasets/world \
-    --grid grids/world.aggrid \
+    --grid outputs/grids/world.aggrid \
     --dataset-fraction 0.05 \
     --seed 42 \
     --epochs 10 \

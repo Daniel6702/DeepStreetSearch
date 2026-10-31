@@ -19,8 +19,8 @@ from modules.trainer import Trainer
 def parse_args():
     parser = argparse.ArgumentParser()
     parser.add_argument("--dataset", default=f"{DATASET_PATH}/world")
-    parser.add_argument("--grid", default="grids/world.aggrid")
-    parser.add_argument("--geo-label-cache", default="grids/world_geo_labels.npz", help="Load geographic labels from this file, or create it if missing")
+    parser.add_argument("--grid", default="outputs/grids/world.aggrid")
+    parser.add_argument("--geo-label-cache", default="outputs/grids/world_geo_labels.npz", help="Load geographic labels from this file, or create it if missing")
     parser.add_argument("--descriptions", default=None, help="Description SQLite file or per-shard database directory")
     parser.add_argument("--model", default=SIGLIP_MODEL)
     parser.add_argument("--batch-size", type=int, default=4)

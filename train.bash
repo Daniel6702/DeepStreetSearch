@@ -20,7 +20,7 @@ export OMP_NUM_THREADS=4
 export PYTHONUNBUFFERED=1
 
 python -u train.py \
-    --grid grids/world.aggrid \
+    --grid outputs/grids/world.aggrid \
     --dataset-fraction 1.0 \
     --seed 42 \
     --epochs 10 \

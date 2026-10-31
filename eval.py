@@ -18,7 +18,7 @@ def parse_args():
     parser = argparse.ArgumentParser()
 
     parser.add_argument("--checkpoint", default="checkpoints/deepstreetsearch.pt")
-    parser.add_argument("--grid", default="grids/world.aggrid")
+    parser.add_argument("--grid", default="outputs/grids/world.aggrid")
     parser.add_argument("--model", default=SIGLIP_MODEL)
     parser.add_argument("--reference-dataset", default=f"{DATASET_PATH}/world")
 
