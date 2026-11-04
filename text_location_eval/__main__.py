@@ -40,6 +40,10 @@ def make_parser() -> argparse.ArgumentParser:
     retrieve.add_argument("--output", default=f"{RUN}/retrieval.json")
     retrieve.add_argument("--top-k", type=int, default=10)
     retrieve.add_argument("--controls", type=int, default=5)
+    retrieve.add_argument("--gallery-size", type=int, default=0,
+                          help="Search only N indexed panoramas (0 = full index)")
+    retrieve.add_argument("--gallery-seed", type=int, default=42,
+                          help="Seed for deterministic, nested gallery subsets")
     retrieve.add_argument("--aggregation", choices=["mean", "max"], default="mean")
     retrieve.add_argument("--reference-chunk-size", type=int, default=2048)
     retrieve.add_argument("--text-batch-size", type=int, default=16)
@@ -76,7 +80,8 @@ def main() -> None:
         build_index(args)
     elif args.command == "retrieve":
         if min(args.top_k, args.text_batch_size, args.reference_chunk_size) < 1 \
-                or args.controls < 0 or args.limit_queries < 0:
+                or args.controls < 0 or args.limit_queries < 0 \
+                or args.gallery_size < 0 or args.gallery_seed < 0:
             parser.error("Invalid retrieval count/batch size")
         from .retrieval import retrieve
         retrieve(args)

@@ -28,7 +28,7 @@ def parse_args():
 
     parser.add_argument("--top-k", type=int, default=5)
     parser.add_argument("--device", default="cuda")
-    parser.add_argument("--output", default="results/text_retrieval")
+    parser.add_argument("--output", default="outputs/text_retrieval")
     parser.add_argument("--rebuild-index", action="store_true")
     parser.add_argument("--max-reference-images", type=int, default=5000,
                     help="Limit reference index size (0 = use all)")

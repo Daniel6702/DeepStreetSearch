@@ -12,8 +12,7 @@ from config import SIGLIP_MODEL, DATASET_PATH
 from modules.dataset import PanoramaDataset
 from modules.losses import DeepStreetSearchLoss
 from modules.model import GeoSearchModel
-from modules.scheduling import make_scheduler
-from modules.trainer import Trainer
+from modules.trainer import Trainer, make_scheduler
 
 
 def parse_args():
@@ -38,9 +37,21 @@ def parse_args():
     parser.add_argument("--checkpoint", default="checkpoints/deepstreetsearch.pt")
     parser.add_argument("--resume", default=None)
     parser.add_argument("--freeze-backbone", action="store_true")
+    parser.add_argument("--freeze-text-encoder", action="store_true",
+                        help="Freeze only SigLIP2's text tower; train image tower and geographic head")
     parser.add_argument("--hierarchy-weights", type=float, nargs="+", help="Geographic loss weights, fine -> coarse")
     parser.add_argument("--geo-loss-weight", type=float, default=1.0)
     parser.add_argument("--contrastive-loss-weight", type=float, default=2.0)
+    parser.add_argument("--geo-head", choices=["linear", "mlp"], default="mlp",
+                        help="Geographic classifier architecture (default: mlp)")
+    parser.add_argument("--geo-pooling", choices=["mean", "attention"], default="attention",
+                        help="How panorama crops are combined for geographic prediction")
+    parser.add_argument("--geo-view-dropout", type=float, default=0.2,
+                        help="Probability of excluding each crop from geographic pooling during training")
+    parser.add_argument(
+        "--revised-contrastive-positives", action="store_true",
+        help="Ignore other crops from the positive panorama as contrastive negatives (default: off)",
+    )
     parser.add_argument("--prompts", type=int, nargs="+", choices=[1, 2, 3, 4], help="Description prompts to train on; default is all")
     parser.add_argument(
         "--description-mode",
@@ -60,6 +71,8 @@ def parse_args():
         parser.error("epochs and batch-size must be positive; workers cannot be negative")
     if args.learning_rate <= 0:
         parser.error("--learning-rate must be positive")
+    if not 0 <= args.geo_view_dropout < 1:
+        parser.error("--geo-view-dropout must be in [0, 1)")
     return args
 
 
@@ -99,7 +112,11 @@ def main():
         grid,
         model_name=args.model,
         freeze_backbone=args.freeze_backbone,
+        freeze_text_encoder=args.freeze_text_encoder,
         attn_implementation=args.attn_implementation,
+        geo_head=args.geo_head,
+        geo_pooling=args.geo_pooling,
+        geo_view_dropout=args.geo_view_dropout,
     )
 
     loss_fn = DeepStreetSearchLoss(
@@ -107,6 +124,7 @@ def main():
         hierarchy_weights=args.hierarchy_weights,
         geographic_weight=args.geo_loss_weight,
         contrastive_weight=args.contrastive_loss_weight,
+        revised_contrastive_positives=args.revised_contrastive_positives,
     )
 
     trainer = Trainer(model, loader, loss_fn, device=args.device)
@@ -135,9 +153,17 @@ def main():
         "workers": min(args.workers, len(dataset.shards)),
         "learning_rate": args.learning_rate,
         "weight_decay": args.weight_decay,
+        "freeze_backbone": args.freeze_backbone,
+        "freeze_text_encoder": args.freeze_text_encoder,
+        "geo_loss_weight": args.geo_loss_weight,
+        "contrastive_loss_weight": args.contrastive_loss_weight,
         "lr_scheduler": args.lr_scheduler,
         "warmup_ratio": args.warmup_ratio,
         "description_mode": args.description_mode,
+        "revised_contrastive_positives": args.revised_contrastive_positives,
+        "geo_head": args.geo_head,
+        "geo_pooling": args.geo_pooling,
+        "geo_view_dropout": args.geo_view_dropout,
         "max_grad_norm": args.max_grad_norm,
         "prompts": args.prompts,
     }
@@ -145,11 +171,21 @@ def main():
     start_epoch = 0
     if args.resume is not None:
         checkpoint = torch.load(args.resume, map_location=trainer.device)
-        trainer.model.load_state_dict(checkpoint["model"])
         if checkpoint.get("run_config") is not None:
+            legacy_defaults = {
+                "revised_contrastive_positives": False,
+                "geo_head": "linear",
+                "geo_pooling": "mean",
+                "geo_view_dropout": 0.0,
+                "freeze_text_encoder": False,
+                # Older checkpoints didn't record these settings. They are
+                # intentionally not enforced for legacy resumes.
+            }
+            optional_legacy_keys = {"freeze_backbone", "geo_loss_weight", "contrastive_loss_weight"}
             changed = [
                 key for key, value in run_config.items()
-                if checkpoint["run_config"].get(key) != value
+                if key not in optional_legacy_keys or key in checkpoint["run_config"]
+                if checkpoint["run_config"].get(key, legacy_defaults.get(key)) != value
             ]
             if changed:
                 raise ValueError(
@@ -161,6 +197,7 @@ def main():
                 "Legacy checkpoint has no scheduler settings. "
                 "Resume with --lr-scheduler none --warmup-ratio 0, or start a new run."
             )
+        trainer.model.load_state_dict(checkpoint["model"])
         optimizer.load_state_dict(checkpoint["optimizer"])
         start_epoch = checkpoint["epoch"] + 1
         if start_epoch > args.epochs:
@@ -189,6 +226,10 @@ def main():
     print(f"Grid classes fine -> coarse: {grid.n_classes}")
     print(f"Descriptions: {description_path}")
     print(f"Description mode: {args.description_mode}")
+    print(f"Revised contrastive positives: {args.revised_contrastive_positives}")
+    print(f"Frozen text encoder: {args.freeze_text_encoder}")
+    print(f"Geographic branch: {args.geo_head} head, {args.geo_pooling} pooling, "
+          f"view dropout {args.geo_view_dropout:.0%}; geographic gradients do not reach the backbone")
     print(f"Dataset: {dataset.num_samples:,}/{len(dataset.metadata):,} panoramas ({args.dataset_fraction:.2%}), seed {args.seed}")
     print(f"LR schedule: {args.lr_scheduler}, warmup {warmup_steps:,}/{total_steps:,} optimizer steps")
     print(f"Max gradient norm: {args.max_grad_norm or 'disabled'}")

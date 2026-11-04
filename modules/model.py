@@ -19,7 +19,7 @@ def _pooled_features(output) -> torch.Tensor:
 
 
 class GeoSearchModel(nn.Module):
-    """SigLIP image/text encoder with a geographic head on panorama features."""
+    """SigLIP retrieval encoder with an independently trained geographic branch."""
 
     def __init__(
         self,
@@ -27,8 +27,23 @@ class GeoSearchModel(nn.Module):
         model_name: str = SIGLIP_MODEL,
         freeze_backbone: bool = False,
         attn_implementation: str = "sdpa",
+        geo_head: str = "linear",
+        geo_pooling: str = "mean",
+        geo_view_dropout: float = 0.0,
+        freeze_text_encoder: bool = False,
     ):
         super().__init__()
+
+        if geo_head not in {"linear", "mlp"}:
+            raise ValueError("geo_head must be 'linear' or 'mlp'")
+        if geo_pooling not in {"mean", "attention"}:
+            raise ValueError("geo_pooling must be 'mean' or 'attention'")
+        if not 0.0 <= geo_view_dropout < 1.0:
+            raise ValueError("geo_view_dropout must be in [0, 1)")
+
+        self.geo_view_dropout = geo_view_dropout
+        self.geo_pooling = geo_pooling
+        self.freeze_text_encoder = freeze_text_encoder
 
         self.backbone = AutoModel.from_pretrained(
             model_name,
@@ -48,8 +63,69 @@ class GeoSearchModel(nn.Module):
             if hasattr(self.backbone, "logit_bias"):
                 self.backbone.logit_bias.requires_grad = True
 
+        if freeze_text_encoder:
+            text_model = getattr(self.backbone, "text_model", None)
+            if text_model is None:
+                raise TypeError(f"{model_name!r} has no separate text_model to freeze")
+            for parameter in text_model.parameters():
+                parameter.requires_grad = False
+
         vision_dim = self.backbone.config.vision_config.hidden_size
-        self.geo_head = nn.Linear(vision_dim, grid.n_classes[0])
+        self.geo_attention = (
+            nn.Sequential(
+                nn.LayerNorm(vision_dim),
+                nn.Linear(vision_dim, 128),
+                nn.Tanh(),
+                nn.Linear(128, 1),
+            ) if geo_pooling == "attention" else None
+        )
+        if geo_head == "mlp":
+            self.geo_head = nn.Sequential(
+                nn.LayerNorm(vision_dim),
+                nn.Linear(vision_dim, 512),
+                nn.GELU(),
+                nn.Dropout(0.1),
+                nn.Linear(512, 256),
+                nn.GELU(),
+                nn.Dropout(0.1),
+                nn.Linear(256, grid.n_classes[0]),
+            )
+        else:
+            # Preserve legacy checkpoint parameter names for the linear model.
+            self.geo_head = nn.Linear(vision_dim, grid.n_classes[0])
+
+    def train(self, mode: bool = True):
+        super().train(mode)
+        # A frozen text tower must also stay in eval mode (no train-time dropout).
+        if self.freeze_text_encoder:
+            self.backbone.text_model.eval()
+        return self
+
+    def pool_geographic_views(self, features: torch.Tensor) -> torch.Tensor:
+        """Aggregate [batch, views, dim] for geographic prediction only."""
+        if features.ndim != 3 or features.shape[1] < 1:
+            raise ValueError("Geographic features must have shape [batch, views, dim]")
+
+        batch_size, num_views, _ = features.shape
+        keep = None
+        if self.training and num_views > 1 and self.geo_view_dropout > 0:
+            keep = torch.rand(batch_size, num_views, device=features.device) >= self.geo_view_dropout
+            # Always retain at least one crop per panorama.
+            missing = ~keep.any(dim=1)
+            if missing.any():
+                replacement = torch.randint(num_views, (batch_size,), device=features.device)
+                keep[missing, replacement[missing]] = True
+
+        if self.geo_attention is not None:
+            scores = self.geo_attention(features).squeeze(-1)
+            if keep is not None:
+                scores = scores.masked_fill(~keep, float("-inf"))
+            weights = F.softmax(scores, dim=1).unsqueeze(-1)
+            return (features * weights).sum(dim=1)
+
+        if keep is not None:
+            return (features * keep.unsqueeze(-1)).sum(dim=1) / keep.sum(dim=1, keepdim=True)
+        return features.mean(dim=1)
 
     @property
     def logit_scale(self) -> torch.Tensor:
@@ -66,8 +142,10 @@ class GeoSearchModel(nn.Module):
         num_views: int,
     ) -> tuple[torch.Tensor, torch.Tensor]:
         view_features = _pooled_features(self.backbone.get_image_features(**image_inputs))
-        panorama_features = view_features.reshape(batch_size, num_views, -1).mean(dim=1)
-
+        # Stop *only geographic* gradients at the shared image embeddings.
+        # Contrastive gradients still update the backbone when enabled.
+        geo_views = view_features.detach().reshape(batch_size, num_views, -1)
+        panorama_features = self.pool_geographic_views(geo_views)
         geo_logits = self.geo_head(panorama_features)
         image_embeddings = F.normalize(view_features, dim=-1)
 

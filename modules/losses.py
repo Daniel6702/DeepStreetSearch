@@ -5,6 +5,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 from adaptive_geogrid import AdaptiveGeoGrid
+from config import NUM_VIEWS
 
 
 class HierarchicalGeographicLoss(nn.Module):
@@ -56,7 +57,18 @@ class HierarchicalGeographicLoss(nn.Module):
 
 
 class SiglipContrastiveLoss(nn.Module):
-    """SigLIP pairwise sigmoid objective with multiple texts per image."""
+    """SigLIP pairwise sigmoid objective with multiple texts per image.
+
+    Optionally ignore other crops of the positive panorama, since they may
+    show overlapping content and should not automatically be negatives.
+    """
+
+    def __init__(self, revised_contrastive_positives: bool = False, num_views: int = NUM_VIEWS):
+        super().__init__()
+        if num_views < 1:
+            raise ValueError("num_views must be positive")
+        self.revised_contrastive_positives = revised_contrastive_positives
+        self.num_views = num_views
 
     def forward(
         self,
@@ -92,7 +104,22 @@ class SiglipContrastiveLoss(nn.Module):
         text_indices = torch.arange(text_embeddings.shape[0], device=logits.device)
         signs[text_indices, positive_image_indices] = 1.0
 
-        return -F.logsigmoid(signs * logits).sum(dim=-1).mean()
+        pair_losses = -F.logsigmoid(signs * logits)
+        if self.revised_contrastive_positives:
+            if image_embeddings.shape[0] % self.num_views:
+                raise ValueError("Image embeddings must contain complete panoramas")
+            # View indices are panorama-major, with num_views consecutive crops
+            # for each panorama. Only the description's own crop is positive;
+            # sibling crops are ignored. Crops from other panoramas are negative.
+            image_indices = torch.arange(image_embeddings.shape[0], device=logits.device)
+            same_panorama = (
+                positive_image_indices[:, None] // self.num_views
+                == image_indices[None, :] // self.num_views
+            )
+            same_panorama[text_indices, positive_image_indices] = False
+            pair_losses = pair_losses.masked_fill(same_panorama, 0.0)
+
+        return pair_losses.sum(dim=-1).mean()
 
 
 class DeepStreetSearchLoss(nn.Module):
@@ -102,6 +129,7 @@ class DeepStreetSearchLoss(nn.Module):
         hierarchy_weights: list[float] | None = None,
         geographic_weight: float = 1.0,
         contrastive_weight: float = 1.0,
+        revised_contrastive_positives: bool = False,
     ):
         super().__init__()
 
@@ -111,7 +139,9 @@ class DeepStreetSearchLoss(nn.Module):
             raise ValueError("At least one loss weight must be positive")
 
         self.geographic = HierarchicalGeographicLoss(grid, hierarchy_weights)
-        self.contrastive = SiglipContrastiveLoss()
+        self.contrastive = SiglipContrastiveLoss(
+            revised_contrastive_positives=revised_contrastive_positives
+        )
         self.geographic_weight = geographic_weight
         self.contrastive_weight = contrastive_weight
 
@@ -126,7 +156,14 @@ class DeepStreetSearchLoss(nn.Module):
         logit_bias: torch.Tensor,
     ) -> tuple[torch.Tensor, dict[str, torch.Tensor]]:
         geographic = self.geographic(geo_logits, labels)
-        contrastive = self.contrastive(image_embeddings, text_embeddings, positive_image_indices, logit_scale, logit_bias)
+        if self.contrastive_weight > 0:
+            contrastive = self.contrastive(
+                image_embeddings, text_embeddings, positive_image_indices, logit_scale, logit_bias
+            )
+        else:
+            # Do not create zero gradients for backbone parameters: AdamW would
+            # otherwise still apply weight decay and change retrieval weights.
+            contrastive = geographic.new_zeros(())
 
         total = self.geographic_weight * geographic + self.contrastive_weight * contrastive
         return total, {

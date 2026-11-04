@@ -23,16 +23,10 @@ def expected_signature(args) -> dict:
 
 
 def load_index(path: str | Path) -> dict:
-    import torch
+    # Keep the original entry point for the index builder and external callers.
+    from modules.inference import load_reference_index
 
-    index = torch.load(path, map_location="cpu", weights_only=True)
-    if not isinstance(index, dict) or not {"signature", "records", "embeddings"} <= index.keys():
-        raise ValueError(f"Invalid reference index: {path}")
-    if index["embeddings"].ndim != 3 or index["embeddings"].shape[1] != 6:
-        raise ValueError("Index embeddings must have shape [panoramas, 6, dimensions]")
-    if len(index["records"]) != index["embeddings"].shape[0]:
-        raise ValueError("Reference index records and embeddings differ in length")
-    return index
+    return load_reference_index(path)
 
 
 def _selected_keys(metadata: dict, count: int, seed: int) -> set[str]:
@@ -131,8 +125,14 @@ def build_index(args) -> None:
                                 prepare_panorama_crops=True, pin_memory=False)
 
         grid = load_grid(args.grid)
-        model = GeoSearchModel(grid, model_name=args.model).to(args.device).eval()
         checkpoint = torch.load(args.checkpoint, map_location="cpu", weights_only=True)
+        train_config = checkpoint.get("run_config") or {}
+        model = GeoSearchModel(
+            grid, model_name=args.model,
+            geo_head=train_config.get("geo_head", "linear"),
+            geo_pooling=train_config.get("geo_pooling", "mean"),
+            geo_view_dropout=train_config.get("geo_view_dropout", 0.0),
+        ).to(args.device).eval()
         model.load_state_dict(checkpoint["model"])
         del checkpoint
         processor = AutoProcessor.from_pretrained(args.model)

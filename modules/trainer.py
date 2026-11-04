@@ -4,6 +4,35 @@ from pathlib import Path
 
 import torch
 from tqdm import tqdm
+import math
+
+from torch.optim.lr_scheduler import LambdaLR
+
+def lr_multiplier(step: int, total_steps: int, warmup_steps: int, mode: str) -> float:
+    if not 0 <= warmup_steps <= total_steps or total_steps <= 0:
+        raise ValueError("Require 0 <= warmup_steps <= total_steps and total_steps > 0")
+    if mode not in ("cosine", "none"):
+        raise ValueError("lr scheduler must be 'cosine' or 'none'")
+
+    if step < warmup_steps:
+        return (step + 1) / warmup_steps
+    if mode == "none":
+        return 1.0
+    if warmup_steps == total_steps:
+        return 1.0
+
+    progress = min(1.0, (step - warmup_steps) / (total_steps - warmup_steps))
+    return 0.5 * (1.0 + math.cos(math.pi * progress))
+
+
+def make_scheduler(optimizer, total_steps: int, warmup_ratio: float, mode: str):
+    if not 0 <= warmup_ratio <= 1:
+        raise ValueError("warmup_ratio must be between 0 and 1")
+    warmup_steps = math.ceil(total_steps * warmup_ratio)
+    return LambdaLR(
+        optimizer,
+        lr_lambda=lambda step: lr_multiplier(step, total_steps, warmup_steps, mode),
+    ), warmup_steps
 
 
 class Trainer:
@@ -39,9 +68,10 @@ class Trainer:
 
         for image_inputs, text_inputs, labels, positive_image_indices, metadata, num_views in progress:
             image_inputs = self._to_device(image_inputs)
-            text_inputs = self._to_device(text_inputs)
             labels = labels.to(self.device, non_blocking=True)
-            positive_image_indices = positive_image_indices.to(self.device, non_blocking=True)
+            if self.loss_fn.contrastive_weight > 0:
+                text_inputs = self._to_device(text_inputs)
+                positive_image_indices = positive_image_indices.to(self.device, non_blocking=True)
             batch_size = len(metadata)
 
             optimizer.zero_grad(set_to_none=True)
@@ -51,12 +81,16 @@ class Trainer:
                 dtype=torch.bfloat16,
                 enabled=self.device.type == "cuda",
             ):
-                geo_logits, image_embeddings, text_embeddings = self.model(
-                    image_inputs,
-                    text_inputs,
-                    batch_size,
-                    num_views,
-                )
+                if self.loss_fn.contrastive_weight > 0:
+                    geo_logits, image_embeddings, text_embeddings = self.model(
+                        image_inputs, text_inputs, batch_size, num_views,
+                    )
+                else:
+                    # Geographic-only training requires no text encoder pass.
+                    geo_logits, image_embeddings = self.model.encode_images(
+                        image_inputs, batch_size, num_views,
+                    )
+                    text_embeddings = None
                 loss, parts = self.loss_fn(
                     geo_logits,
                     labels,
