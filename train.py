@@ -12,6 +12,7 @@ from config import SIGLIP_MODEL, DATASET_PATH
 from modules.dataset import PanoramaDataset
 from modules.losses import DeepStreetSearchLoss
 from modules.model import GeoSearchModel
+from modules.optimizers import separate_learning_rate_groups
 from modules.trainer import Trainer, make_scheduler
 
 
@@ -27,6 +28,8 @@ def parse_args():
     parser.add_argument("--prefetch-factor", type=int, default=2)
     parser.add_argument("--epochs", type=int, default=10)
     parser.add_argument("--learning-rate", type=float, default=1e-5)
+    parser.add_argument("--backbone-lr", type=float, default=None)
+    parser.add_argument("--geo-lr", type=float, default=None)
     parser.add_argument("--lr-scheduler", choices=["cosine", "none"], default="cosine")
     parser.add_argument("--warmup-ratio", type=float, default=0.02, help="Fraction of total optimizer steps used for linear warmup (0 disables)")
     parser.add_argument("--max-grad-norm", type=float, default=1.0, help="Global gradient norm clipping; 0 disables")
@@ -42,6 +45,10 @@ def parse_args():
     parser.add_argument("--hierarchy-weights", type=float, nargs="+", help="Geographic loss weights, fine -> coarse")
     parser.add_argument("--geo-loss-weight", type=float, default=1.0)
     parser.add_argument("--contrastive-loss-weight", type=float, default=2.0)
+    parser.add_argument("--panorama-contrastive-weight", type=float, default=0.0,
+                        help="Additional panorama-level text contrastive loss (0 disables)")
+    parser.add_argument("--geo-backbone-gradient-scale", type=float, default=0.0,
+                        help="Geographic gradient entering the vision tower: 0=detached, 1=full")
     parser.add_argument("--geo-head", choices=["linear", "mlp"], default="mlp",
                         help="Geographic classifier architecture (default: mlp)")
     parser.add_argument("--geo-pooling", choices=["mean", "attention"], default="attention",
@@ -71,8 +78,16 @@ def parse_args():
         parser.error("epochs and batch-size must be positive; workers cannot be negative")
     if args.learning_rate <= 0:
         parser.error("--learning-rate must be positive")
+    if args.backbone_lr is not None and args.backbone_lr <= 0:
+        parser.error("--backbone-lr must be positive")
+    if args.geo_lr is not None and args.geo_lr <= 0:
+        parser.error("--geo-lr must be positive")
     if not 0 <= args.geo_view_dropout < 1:
         parser.error("--geo-view-dropout must be in [0, 1)")
+    if not 0 <= args.geo_backbone_gradient_scale <= 1:
+        parser.error("--geo-backbone-gradient-scale must be in [0, 1]")
+    if args.panorama_contrastive_weight < 0:
+        parser.error("--panorama-contrastive-weight cannot be negative")
     return args
 
 
@@ -117,6 +132,7 @@ def main():
         geo_head=args.geo_head,
         geo_pooling=args.geo_pooling,
         geo_view_dropout=args.geo_view_dropout,
+        geo_backbone_gradient_scale=args.geo_backbone_gradient_scale,
     )
 
     loss_fn = DeepStreetSearchLoss(
@@ -125,11 +141,19 @@ def main():
         geographic_weight=args.geo_loss_weight,
         contrastive_weight=args.contrastive_loss_weight,
         revised_contrastive_positives=args.revised_contrastive_positives,
+        panorama_contrastive_weight=args.panorama_contrastive_weight,
     )
 
     trainer = Trainer(model, loader, loss_fn, device=args.device)
+    backbone_lr = args.backbone_lr if args.backbone_lr is not None else args.learning_rate
+    geo_lr = args.geo_lr if args.geo_lr is not None else args.learning_rate
+    optimizer_parameters = (
+        separate_learning_rate_groups(trainer.model, backbone_lr, geo_lr)
+        if args.backbone_lr is not None or args.geo_lr is not None
+        else (parameter for parameter in trainer.model.parameters() if parameter.requires_grad)
+    )
     optimizer = AdamW(
-        (parameter for parameter in trainer.model.parameters() if parameter.requires_grad),
+        optimizer_parameters,
         lr=args.learning_rate,
         weight_decay=args.weight_decay,
     )
@@ -157,6 +181,8 @@ def main():
         "freeze_text_encoder": args.freeze_text_encoder,
         "geo_loss_weight": args.geo_loss_weight,
         "contrastive_loss_weight": args.contrastive_loss_weight,
+        "panorama_contrastive_weight": args.panorama_contrastive_weight,
+        "geo_backbone_gradient_scale": args.geo_backbone_gradient_scale,
         "lr_scheduler": args.lr_scheduler,
         "warmup_ratio": args.warmup_ratio,
         "description_mode": args.description_mode,
@@ -178,6 +204,8 @@ def main():
                 "geo_pooling": "mean",
                 "geo_view_dropout": 0.0,
                 "freeze_text_encoder": False,
+                "panorama_contrastive_weight": 0.0,
+                "geo_backbone_gradient_scale": 0.0,
                 # Older checkpoints didn't record these settings. They are
                 # intentionally not enforced for legacy resumes.
             }
@@ -229,7 +257,9 @@ def main():
     print(f"Revised contrastive positives: {args.revised_contrastive_positives}")
     print(f"Frozen text encoder: {args.freeze_text_encoder}")
     print(f"Geographic branch: {args.geo_head} head, {args.geo_pooling} pooling, "
-          f"view dropout {args.geo_view_dropout:.0%}; geographic gradients do not reach the backbone")
+          f"view dropout {args.geo_view_dropout:.0%}; "
+          f"geo->vision gradient scale {args.geo_backbone_gradient_scale:g}")
+    print(f"Panorama contrastive loss weight: {args.panorama_contrastive_weight:g}")
     print(f"Dataset: {dataset.num_samples:,}/{len(dataset.metadata):,} panoramas ({args.dataset_fraction:.2%}), seed {args.seed}")
     print(f"LR schedule: {args.lr_scheduler}, warmup {warmup_steps:,}/{total_steps:,} optimizer steps")
     print(f"Max gradient norm: {args.max_grad_norm or 'disabled'}")
@@ -247,7 +277,8 @@ def main():
             f"Epoch {epoch + 1}/{args.epochs} - "
             f"loss: {metrics['loss']:.4f} - "
             f"geo: {metrics['geographic']:.4f} - "
-            f"contrastive: {metrics['contrastive']:.4f}"
+            f"contrastive: {metrics['contrastive']:.4f} - "
+            f"panorama: {metrics['panorama_contrastive']:.4f}"
         )
         trainer.save_checkpoint(optimizer, epoch, args.checkpoint, scheduler=scheduler, run_config=run_config)
 

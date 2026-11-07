@@ -60,6 +60,7 @@ class Trainer:
             "loss": torch.zeros((), device=self.device),
             "geographic": torch.zeros((), device=self.device),
             "contrastive": torch.zeros((), device=self.device),
+            "panorama_contrastive": torch.zeros((), device=self.device),
         }
         batches = 0
         samples = 0
@@ -69,7 +70,9 @@ class Trainer:
         for image_inputs, text_inputs, labels, positive_image_indices, metadata, num_views in progress:
             image_inputs = self._to_device(image_inputs)
             labels = labels.to(self.device, non_blocking=True)
-            if self.loss_fn.contrastive_weight > 0:
+            use_text = (self.loss_fn.contrastive_weight > 0
+                        or self.loss_fn.panorama_contrastive_weight > 0)
+            if use_text:
                 text_inputs = self._to_device(text_inputs)
                 positive_image_indices = positive_image_indices.to(self.device, non_blocking=True)
             batch_size = len(metadata)
@@ -81,7 +84,7 @@ class Trainer:
                 dtype=torch.bfloat16,
                 enabled=self.device.type == "cuda",
             ):
-                if self.loss_fn.contrastive_weight > 0:
+                if use_text:
                     geo_logits, image_embeddings, text_embeddings = self.model(
                         image_inputs, text_inputs, batch_size, num_views,
                     )
@@ -114,6 +117,7 @@ class Trainer:
             totals["loss"] += loss.detach()
             totals["geographic"] += parts["geographic"]
             totals["contrastive"] += parts["contrastive"]
+            totals["panorama_contrastive"] += parts["panorama_contrastive"]
             batches += 1
             samples += batch_size
 
@@ -121,6 +125,7 @@ class Trainer:
                 loss=f"{loss.item():.3f}",
                 geo=f"{parts['geographic'].item():.3f}",
                 contrast=f"{parts['contrastive'].item():.3f}",
+                pano=f"{parts['panorama_contrastive'].item():.3f}",
             )
 
         if batches == 0:

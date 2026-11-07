@@ -14,8 +14,9 @@ def load_model(checkpoint, grid_path, model_name, device):
     grid = load_grid(grid_path)
 
     model = GeoSearchModel(grid, model_name=model_name)
-    state = torch.load(checkpoint, map_location="cpu", weights_only=True)
-    model.load_state_dict(state["model"])
+    if checkpoint:
+        state = torch.load(checkpoint, map_location="cpu", weights_only=True)
+        model.load_state_dict(state["model"])
 
     model = model.to(device).eval()
     processor = AutoProcessor.from_pretrained(model_name)
@@ -60,6 +61,7 @@ def encode_text(model, processor, descriptions, device):
     inputs = processor(
         text=descriptions,
         padding=True,
+        max_length=64,
         truncation=True,
         return_tensors="pt",
     )

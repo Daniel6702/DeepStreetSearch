@@ -15,7 +15,8 @@ from config import DATASET_PATH, NUM_VIEWS, SIGLIP_MODEL
 from text_location_eval.common import write_json
 
 
-def select_records(records, metadata, config, count: int, seed: int, split_mode: str = "auto"):
+def select_records(records, metadata, config, count: int, seed: int,
+                   split_mode: str = "auto", external_train_ids=None):
     """Choose gallery positives, preferring held-out IDs when the index contains any.
 
     The index builder and training sampler may share a seed. In that case the
@@ -23,7 +24,7 @@ def select_records(records, metadata, config, count: int, seed: int, split_mode:
     evaluation is impossible *with this index*. Auto mode reports the fallback
     to in-sample evaluation instead of crashing after an expensive index run.
     """
-    if split_mode not in {"auto", "heldout", "in_sample"}:
+    if split_mode not in {"auto", "heldout", "in_sample", "external"}:
         raise ValueError(f"Unknown split mode: {split_mode}")
 
     fraction, train_seed = config.get("dataset_fraction"), config.get("seed")
@@ -34,7 +35,14 @@ def select_records(records, metadata, config, count: int, seed: int, split_mode:
     if not matched:
         raise ValueError("No gallery panoramas have matching evaluation metadata; check --dataset")
 
-    if fraction is not None and train_seed is not None and 0 < float(fraction) < 1:
+    if split_mode == "external":
+        if external_train_ids is None:
+            raise ValueError("External evaluation requires training panorama IDs")
+        overlap = set(metadata).intersection(external_train_ids)
+        if overlap:
+            raise ValueError(f"External test dataset overlaps training by {len(overlap)} panorama IDs")
+        available, split = matched, "external"
+    elif fraction is not None and train_seed is not None and 0 < float(fraction) < 1:
         training_count = max(1, int(len(metadata) * float(fraction)))
         training_ids = set(random.Random(int(train_seed)).sample(list(metadata), training_count))
         heldout = [record for record in matched if record["image_id"] not in training_ids]
@@ -42,7 +50,9 @@ def select_records(records, metadata, config, count: int, seed: int, split_mode:
     else:
         heldout, in_sample = [], matched
 
-    if split_mode == "heldout":
+    if split_mode == "external":
+        pass  # Already validated against the separate training dataset.
+    elif split_mode == "heldout":
         available, split = heldout, "heldout"
     elif split_mode == "in_sample":
         available, split = in_sample, "in_sample"
@@ -120,13 +130,15 @@ def main():
     parser.add_argument("--index", required=True)
     parser.add_argument("--grid", default="outputs/grids/world.aggrid")
     parser.add_argument("--dataset", default=f"{DATASET_PATH}/world")
+    parser.add_argument("--train-dataset", default=None,
+                        help="Required with --split external; verifies the datasets share no panorama IDs")
     parser.add_argument("--descriptions", default=None)
     parser.add_argument("--model", default=SIGLIP_MODEL)
     parser.add_argument("--device", default="cuda")
     parser.add_argument("--num-panoramas", type=int, default=250,
                         help="Number of source panoramas sampled from the index (0 = all)")
     parser.add_argument("--seed", type=int, default=42)
-    parser.add_argument("--split", choices=("auto", "heldout", "in_sample"), default="auto",
+    parser.add_argument("--split", choices=("auto", "heldout", "in_sample", "external"), default="auto",
                         help="auto: prefer held-out and warn if only in-sample is possible")
     parser.add_argument("--prompts", type=int, nargs="+", choices=(1, 2, 3, 4), default=(1, 2, 3, 4))
     parser.add_argument("--aggregation", choices=("mean", "max"), default="mean")
@@ -135,6 +147,8 @@ def main():
     args = parser.parse_args()
     if args.num_panoramas < 0 or args.seed < 0 or args.top_k < 1:
         parser.error("Counts and seed must be nonnegative, and --top-k must be positive")
+    if args.split == "external" and not args.train_dataset:
+        parser.error("--split external requires --train-dataset")
 
     import torch
 
@@ -147,9 +161,14 @@ def main():
 
     index = load_reference_index(args.index)
     metadata = PanoramaDataset.load_metadata(args.dataset)
+    external_train_ids = None
+    if args.split == "external":
+        if Path(args.dataset).resolve() == Path(args.train_dataset).resolve():
+            parser.error("--dataset and --train-dataset must differ for external evaluation")
+        external_train_ids = set(PanoramaDataset.load_metadata(args.train_dataset))
     selected, split = select_records(index["records"], metadata, config,
-                                     args.num_panoramas, args.seed, args.split)
-    if split != "heldout":
+                                     args.num_panoramas, args.seed, args.split, external_train_ids)
+    if split == "in_sample":
         print("WARNING: This checkpoint has no identifiable held-out set. Results may be in-sample.")
     descriptions = Path(args.descriptions) if args.descriptions else Path(args.dataset) / "descriptions"
     caption_rows = load_captions(selected, metadata, descriptions, args.prompts, args.seed)

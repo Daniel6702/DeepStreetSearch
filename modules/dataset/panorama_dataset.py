@@ -61,7 +61,7 @@ class PanoramaDataset(IterableDataset):
         sample_count = max(1, int(len(self.metadata) * fraction))
         self.selected_keys = (
             set(random.Random(seed).sample(list(self.metadata), sample_count))
-            if fraction < 1.0 else None
+            if fraction < 1.0 else set(self.metadata)
         )
         self.num_samples = sample_count
         self._shard_counts = None

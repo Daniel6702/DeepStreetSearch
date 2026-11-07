@@ -130,20 +130,26 @@ class DeepStreetSearchLoss(nn.Module):
         geographic_weight: float = 1.0,
         contrastive_weight: float = 1.0,
         revised_contrastive_positives: bool = False,
+        panorama_contrastive_weight: float = 0.0,
     ):
         super().__init__()
 
-        if geographic_weight < 0 or contrastive_weight < 0:
+        if geographic_weight < 0 or contrastive_weight < 0 or panorama_contrastive_weight < 0:
             raise ValueError("Loss weights must be non-negative")
-        if geographic_weight == 0 and contrastive_weight == 0:
+        if geographic_weight == 0 and contrastive_weight == 0 and panorama_contrastive_weight == 0:
             raise ValueError("At least one loss weight must be positive")
 
         self.geographic = HierarchicalGeographicLoss(grid, hierarchy_weights)
         self.contrastive = SiglipContrastiveLoss(
             revised_contrastive_positives=revised_contrastive_positives
         )
+        # A text can match one of six views while also being positive for the
+        # whole panorama. Unlike the crop objective, every other panorama is a
+        # negative; there are no sibling-view pairs to mask at this level.
+        self.panorama_contrastive = SiglipContrastiveLoss(num_views=1)
         self.geographic_weight = geographic_weight
         self.contrastive_weight = contrastive_weight
+        self.panorama_contrastive_weight = panorama_contrastive_weight
 
     def forward(
         self,
@@ -165,8 +171,30 @@ class DeepStreetSearchLoss(nn.Module):
             # otherwise still apply weight decay and change retrieval weights.
             contrastive = geographic.new_zeros(())
 
-        total = self.geographic_weight * geographic + self.contrastive_weight * contrastive
+        if self.panorama_contrastive_weight > 0:
+            if image_embeddings.ndim != 2 or image_embeddings.shape[0] % NUM_VIEWS:
+                raise ValueError("Panorama contrastive loss requires complete view groups")
+            # Mean of the six normalized crop embeddings: the same panorama
+            # representation used by mean-aggregation retrieval, normalized.
+            panorama_embeddings = F.normalize(
+                image_embeddings.reshape(-1, NUM_VIEWS, image_embeddings.shape[-1]).mean(dim=1),
+                dim=-1,
+            )
+            panorama_positives = torch.div(
+                positive_image_indices, NUM_VIEWS, rounding_mode="floor"
+            )
+            panorama_contrastive = self.panorama_contrastive(
+                panorama_embeddings, text_embeddings, panorama_positives,
+                logit_scale, logit_bias,
+            )
+        else:
+            panorama_contrastive = geographic.new_zeros(())
+
+        total = (self.geographic_weight * geographic
+                 + self.contrastive_weight * contrastive
+                 + self.panorama_contrastive_weight * panorama_contrastive)
         return total, {
             "geographic": geographic.detach(),
             "contrastive": contrastive.detach(),
+            "panorama_contrastive": panorama_contrastive.detach(),
         }

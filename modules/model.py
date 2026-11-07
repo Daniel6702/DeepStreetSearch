@@ -31,6 +31,7 @@ class GeoSearchModel(nn.Module):
         geo_pooling: str = "mean",
         geo_view_dropout: float = 0.0,
         freeze_text_encoder: bool = False,
+        geo_backbone_gradient_scale: float = 0.0,
     ):
         super().__init__()
 
@@ -40,10 +41,13 @@ class GeoSearchModel(nn.Module):
             raise ValueError("geo_pooling must be 'mean' or 'attention'")
         if not 0.0 <= geo_view_dropout < 1.0:
             raise ValueError("geo_view_dropout must be in [0, 1)")
+        if not 0.0 <= geo_backbone_gradient_scale <= 1.0:
+            raise ValueError("geo_backbone_gradient_scale must be in [0, 1]")
 
         self.geo_view_dropout = geo_view_dropout
         self.geo_pooling = geo_pooling
         self.freeze_text_encoder = freeze_text_encoder
+        self.geo_backbone_gradient_scale = geo_backbone_gradient_scale
 
         self.backbone = AutoModel.from_pretrained(
             model_name,
@@ -142,9 +146,19 @@ class GeoSearchModel(nn.Module):
         num_views: int,
     ) -> tuple[torch.Tensor, torch.Tensor]:
         view_features = _pooled_features(self.backbone.get_image_features(**image_inputs))
-        # Stop *only geographic* gradients at the shared image embeddings.
-        # Contrastive gradients still update the backbone when enabled.
-        geo_views = view_features.detach().reshape(batch_size, num_views, -1)
+        # Forward values are unchanged. Scale ONLY the geographic gradient
+        # entering the vision tower; the geographic head keeps full gradients.
+        # Contrastive gradients always use the original view_features.
+        detached_features = view_features.detach()
+        if self.geo_backbone_gradient_scale == 0:
+            # No autograd edge at all: geographic-only runs must not cause
+            # AdamW to weight-decay a supposedly detached backbone.
+            geo_features = detached_features
+        else:
+            geo_features = detached_features + self.geo_backbone_gradient_scale * (
+                view_features - detached_features
+            )
+        geo_views = geo_features.reshape(batch_size, num_views, -1)
         panorama_features = self.pool_geographic_views(geo_views)
         geo_logits = self.geo_head(panorama_features)
         image_embeddings = F.normalize(view_features, dim=-1)
