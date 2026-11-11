@@ -1,3 +1,6 @@
 [submodule "modules/adaptive-geogrid"]
 	path = modules/adaptive-geogrid
 	url = git@github.com:Daniel6702/adaptive-geogrid.git
+[submodule "external/Text4VPR"]
+	path = external/Text4VPR
+	url = https://github.com/nuozimiaowu/Text4VPR.git
