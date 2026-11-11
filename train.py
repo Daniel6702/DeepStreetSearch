@@ -38,6 +38,8 @@ def parse_args():
     parser.add_argument("--weight-decay", type=float, default=0.05)
     parser.add_argument("--device", default="cuda")
     parser.add_argument("--checkpoint", default="checkpoints/deepstreetsearch.pt")
+    parser.add_argument("--checkpoint-per-epoch", action="store_true",
+                        help="Keep one checkpoint per epoch: NAME.epoch-01.pt, NAME.epoch-02.pt, ...")
     parser.add_argument("--resume", default=None)
     parser.add_argument("--freeze-backbone", action="store_true")
     parser.add_argument("--freeze-text-encoder", action="store_true",
@@ -292,6 +294,12 @@ def main():
             scheduler.last_epoch = trainer.global_step
             scheduler._step_count = trainer.global_step + 1
             scheduler._last_lr = [group["lr"] for group in optimizer.param_groups]
+        if checkpoint.get("torch_rng_state") is not None:
+            torch.set_rng_state(checkpoint["torch_rng_state"].cpu())
+        if torch.cuda.is_available() and checkpoint.get("cuda_rng_states") is not None:
+            torch.cuda.set_rng_state_all(checkpoint["cuda_rng_states"])
+        if checkpoint.get("python_rng_state") is not None:
+            random.setstate(checkpoint["python_rng_state"])
         dataset.set_epoch(start_epoch)
         print(f"Resuming from epoch {start_epoch + 1} (optimizer step {trainer.global_step})")
 
@@ -329,7 +337,16 @@ def main():
             f"panorama: {metrics['panorama_contrastive']:.4f} - "
             f"semantic: {metrics['semantic_contrastive']:.4f}"
         )
-        trainer.save_checkpoint(optimizer, epoch, args.checkpoint, scheduler=scheduler, run_config=run_config)
+        checkpoint_path = Path(args.checkpoint)
+        if args.checkpoint_per_epoch:
+            checkpoint_path = checkpoint_path.with_name(
+                f"{checkpoint_path.stem}.epoch-{epoch + 1:02d}{checkpoint_path.suffix}"
+            )
+            if checkpoint_path.exists():
+                raise FileExistsError(f"Refusing to overwrite preserved epoch: {checkpoint_path}")
+        trainer.save_checkpoint(optimizer, epoch, checkpoint_path, scheduler=scheduler, run_config=run_config)
+        if args.checkpoint_per_epoch:
+            print(f"Saved: epoch checkpoint {checkpoint_path}")
 
 if __name__ == "__main__":
     main()

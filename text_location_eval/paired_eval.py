@@ -138,6 +138,8 @@ def main():
     parser.add_argument("--num-panoramas", type=int, default=250,
                         help="Number of source panoramas sampled from the index (0 = all)")
     parser.add_argument("--seed", type=int, default=42)
+    parser.add_argument("--positive-ids", default=None,
+                        help="Optional newline-delimited panorama IDs for identical paired queries across galleries")
     parser.add_argument("--split", choices=("auto", "heldout", "in_sample", "external"), default="auto",
                         help="auto: prefer held-out and warn if only in-sample is possible")
     parser.add_argument("--prompts", type=int, nargs="+", choices=(1, 2, 3, 4), default=(1, 2, 3, 4))
@@ -172,8 +174,20 @@ def main():
         if Path(args.dataset).resolve() == Path(args.train_dataset).resolve():
             parser.error("--dataset and --train-dataset must differ for external evaluation")
         external_train_ids = set(PanoramaDataset.load_metadata(args.train_dataset))
-    selected, split = select_records(index["records"], metadata, config,
-                                     args.num_panoramas, args.seed, args.split, external_train_ids)
+    records = index["records"]
+    count = args.num_panoramas
+    if args.positive_ids:
+        positive_ids = [line.strip() for line in Path(args.positive_ids).read_text().splitlines()
+                        if line.strip()]
+        if not positive_ids or len(positive_ids) != len(set(positive_ids)):
+            raise ValueError("--positive-ids must contain distinct, nonempty IDs")
+        requested = set(positive_ids)
+        records = [record for record in records if record["image_id"] in requested]
+        if len(records) != len(requested):
+            raise ValueError("Some requested paired positives are missing from the gallery index")
+        count = 0  # Select exactly these positives, without resampling.
+    selected, split = select_records(records, metadata, config,
+                                     count, args.seed, args.split, external_train_ids)
     if split == "in_sample":
         print("WARNING: This checkpoint has no identifiable held-out set. Results may be in-sample.")
     descriptions = Path(args.descriptions) if args.descriptions else Path(args.dataset) / "descriptions"

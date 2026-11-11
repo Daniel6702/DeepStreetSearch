@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import os
+import random
 from pathlib import Path
 
 import torch
@@ -146,6 +148,7 @@ class Trainer:
         path = Path(path)
         path.parent.mkdir(parents=True, exist_ok=True)
 
+        temporary = path.with_name(path.name + ".tmp")
         torch.save(
             {
                 "model": self.model.state_dict(),
@@ -154,6 +157,10 @@ class Trainer:
                 "global_step": self.global_step,
                 "scheduler": scheduler.state_dict() if scheduler is not None else None,
                 "run_config": run_config,
+                "torch_rng_state": torch.get_rng_state(),
+                "cuda_rng_states": torch.cuda.get_rng_state_all() if torch.cuda.is_available() else None,
+                "python_rng_state": random.getstate(),
             },
-            path,
+            temporary,
         )
+        os.replace(temporary, path)
