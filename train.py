@@ -47,6 +47,20 @@ def parse_args():
     parser.add_argument("--contrastive-loss-weight", type=float, default=2.0)
     parser.add_argument("--panorama-contrastive-weight", type=float, default=0.0,
                         help="Additional panorama-level text contrastive loss (0 disables)")
+    parser.add_argument("--panorama-contrastive-aggregation", choices=["mean", "max"],
+                        default="mean", help="Aggregate panorama views in the additional contrastive loss")
+    parser.add_argument("--retrieval-fusion", choices=["none", "cross_view", "semantic_tokens"],
+                        default="none", help="Experimental panorama representation for text retrieval")
+    parser.add_argument("--fusion-layers", type=int, default=2,
+                        help="Cross-view Transformer layers (default 2)")
+    parser.add_argument("--fusion-heads", type=int, default=8,
+                        help="Attention heads in experimental fusion (default 8)")
+    parser.add_argument("--context-gate-init", type=float, default=0.05,
+                        help="Initial residual strength for cross-view fusion (0,1)")
+    parser.add_argument("--semantic-token-count", type=int, default=3,
+                        help="Number of learned panorama tokens (default 3)")
+    parser.add_argument("--semantic-token-loss-weight", type=float, default=0.0,
+                        help="Text-to-learned-token contrastive weight (requires semantic_tokens fusion)")
     parser.add_argument("--geo-backbone-gradient-scale", type=float, default=0.0,
                         help="Geographic gradient entering the vision tower: 0=detached, 1=full")
     parser.add_argument("--geo-head", choices=["linear", "mlp"], default="mlp",
@@ -88,6 +102,15 @@ def parse_args():
         parser.error("--geo-backbone-gradient-scale must be in [0, 1]")
     if args.panorama_contrastive_weight < 0:
         parser.error("--panorama-contrastive-weight cannot be negative")
+    if min(args.fusion_layers, args.fusion_heads, args.semantic_token_count) < 1:
+        parser.error("--fusion-layers, --fusion-heads and --semantic-token-count must be positive")
+    if not 0 < args.context_gate_init < 1:
+        parser.error("--context-gate-init must be in (0,1)")
+    if args.semantic_token_loss_weight < 0:
+        parser.error("--semantic-token-loss-weight cannot be negative")
+    if (args.retrieval_fusion == "semantic_tokens") != (args.semantic_token_loss_weight > 0):
+        parser.error("Semantic tokens require --semantic-token-loss-weight > 0, "
+                     "and that loss requires --retrieval-fusion semantic_tokens")
     return args
 
 
@@ -133,6 +156,11 @@ def main():
         geo_pooling=args.geo_pooling,
         geo_view_dropout=args.geo_view_dropout,
         geo_backbone_gradient_scale=args.geo_backbone_gradient_scale,
+        retrieval_fusion=args.retrieval_fusion,
+        fusion_layers=args.fusion_layers,
+        fusion_heads=args.fusion_heads,
+        semantic_token_count=args.semantic_token_count,
+        context_gate_init=args.context_gate_init,
     )
 
     loss_fn = DeepStreetSearchLoss(
@@ -142,6 +170,8 @@ def main():
         contrastive_weight=args.contrastive_loss_weight,
         revised_contrastive_positives=args.revised_contrastive_positives,
         panorama_contrastive_weight=args.panorama_contrastive_weight,
+        panorama_contrastive_aggregation=args.panorama_contrastive_aggregation,
+        semantic_token_loss_weight=args.semantic_token_loss_weight,
     )
 
     trainer = Trainer(model, loader, loss_fn, device=args.device)
@@ -182,6 +212,13 @@ def main():
         "geo_loss_weight": args.geo_loss_weight,
         "contrastive_loss_weight": args.contrastive_loss_weight,
         "panorama_contrastive_weight": args.panorama_contrastive_weight,
+        "panorama_contrastive_aggregation": args.panorama_contrastive_aggregation,
+        "retrieval_fusion": args.retrieval_fusion,
+        "fusion_layers": args.fusion_layers,
+        "fusion_heads": args.fusion_heads,
+        "semantic_token_count": args.semantic_token_count,
+        "context_gate_init": args.context_gate_init,
+        "semantic_token_loss_weight": args.semantic_token_loss_weight,
         "geo_backbone_gradient_scale": args.geo_backbone_gradient_scale,
         "lr_scheduler": args.lr_scheduler,
         "warmup_ratio": args.warmup_ratio,
@@ -205,7 +242,14 @@ def main():
                 "geo_view_dropout": 0.0,
                 "freeze_text_encoder": False,
                 "panorama_contrastive_weight": 0.0,
+                "panorama_contrastive_aggregation": "mean",
                 "geo_backbone_gradient_scale": 0.0,
+                "retrieval_fusion": "none",
+                "fusion_layers": 2,
+                "fusion_heads": 8,
+                "semantic_token_count": 3,
+                "context_gate_init": 0.05,
+                "semantic_token_loss_weight": 0.0,
                 # Older checkpoints didn't record these settings. They are
                 # intentionally not enforced for legacy resumes.
             }
@@ -259,7 +303,11 @@ def main():
     print(f"Geographic branch: {args.geo_head} head, {args.geo_pooling} pooling, "
           f"view dropout {args.geo_view_dropout:.0%}; "
           f"geo->vision gradient scale {args.geo_backbone_gradient_scale:g}")
-    print(f"Panorama contrastive loss weight: {args.panorama_contrastive_weight:g}")
+    print(f"Panorama contrastive loss: weight {args.panorama_contrastive_weight:g}, "
+          f"aggregation {args.panorama_contrastive_aggregation}")
+    print(f"Retrieval fusion: {args.retrieval_fusion}, layers={args.fusion_layers}, "
+          f"heads={args.fusion_heads}, gate-init={args.context_gate_init:g}, "
+          f"tokens={args.semantic_token_count}, token loss weight={args.semantic_token_loss_weight:g}")
     print(f"Dataset: {dataset.num_samples:,}/{len(dataset.metadata):,} panoramas ({args.dataset_fraction:.2%}), seed {args.seed}")
     print(f"LR schedule: {args.lr_scheduler}, warmup {warmup_steps:,}/{total_steps:,} optimizer steps")
     print(f"Max gradient norm: {args.max_grad_norm or 'disabled'}")
@@ -278,7 +326,8 @@ def main():
             f"loss: {metrics['loss']:.4f} - "
             f"geo: {metrics['geographic']:.4f} - "
             f"contrastive: {metrics['contrastive']:.4f} - "
-            f"panorama: {metrics['panorama_contrastive']:.4f}"
+            f"panorama: {metrics['panorama_contrastive']:.4f} - "
+            f"semantic: {metrics['semantic_contrastive']:.4f}"
         )
         trainer.save_checkpoint(optimizer, epoch, args.checkpoint, scheduler=scheduler, run_config=run_config)
 

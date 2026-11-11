@@ -21,7 +21,7 @@ def parse_args():
                    help="Trained checkpoint. Leave out for the untrained baseline")
     p.add_argument("--label", default=None,
                    help="Name for this run (default: 'trained' if --checkpoint given, else 'untrained')")
-    p.add_argument("--grid", default="grids/world.aggrid")
+    p.add_argument("--grid", default="outputs/grids/world.aggrid")
     p.add_argument("--model", default=SIGLIP_MODEL)
     p.add_argument("--output", default="results/alignment")
     p.add_argument("--batch-size", type=int, default=64)
@@ -69,14 +69,33 @@ def embed_text(model, processor, texts, device, batch_size):
     return torch.cat(out)
 
 
-def summarize(img, txt):
+@torch.inference_mode()
+def true_match_ranks(queries, gallery, device, chunk=1024):
+    """Rank of the correct item (same index) for each query. 1 = best."""
+    gallery = gallery.to(device)
+    ranks = []
+    for s in range(0, len(queries), chunk):
+        q = queries[s:s + chunk].to(device)
+        sims = q @ gallery.T
+        rows = torch.arange(len(q), device=device)
+        true = sims[rows, rows + s]
+        ranks.append(((sims > true[:, None]).sum(1) + 1).cpu())
+    return torch.cat(ranks)
+
+
+def summarize(img, txt, device):
     sim = (img * txt).sum(-1)  # cosine similarity per image/description pair
-    return {
+    res = {
         "n_pairs": len(sim),
         "mean_cosine_sim": sim.mean().item(),
-        "mean_cosine_distance": (1 - sim).mean().item(),
-        "std_sim": sim.std().item(),
     }
+    # txt2img is the "search" direction: description in, find its image
+    for name, (q, g) in {"txt2img": (txt, img), "img2txt": (img, txt)}.items():
+        r = true_match_ranks(q, g, device)
+        for k in (1, 10, 50):
+            res[f"{name}_R@{k}"] = (r <= k).float().mean().item()
+        res[f"{name}_median_rank"] = r.float().median().item()
+    return res
 
 
 def main():
@@ -105,7 +124,7 @@ def main():
     torch.save({"ids": [r["id"] for r in records], "image": img, "text": txt},
                out_dir / f"{label}_embeddings.pt")
 
-    result = summarize(img, txt)
+    result = summarize(img, txt, device)
     with open(out_dir / f"{label}.json", "w") as f:
         json.dump(result, f, indent=2)
 

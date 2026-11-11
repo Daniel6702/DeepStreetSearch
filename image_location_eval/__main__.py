@@ -99,7 +99,7 @@ def main():
     from modules.dataset.metadata import HIERARCHY_LABELS, coordinates, precompute_hierarchy_labels
     from modules.dataset.collators import close_prepared_crops
     from modules.dataset.shards import image_key
-    from modules.model import GeoSearchModel
+    from modules.model import GeoSearchModel, model_architecture_kwargs
 
     args = parse_args()
     checkpoint_path = Path(args.checkpoint)
@@ -124,9 +124,7 @@ def main():
 
     model = GeoSearchModel(
         grid, model_name=args.model,
-        geo_head=config.get("geo_head", "linear"),
-        geo_pooling=config.get("geo_pooling", "mean"),
-        geo_view_dropout=config.get("geo_view_dropout", 0.0),
+        **model_architecture_kwargs(config),
     ).to(args.device).eval()
     model.load_state_dict(checkpoint["model"])
     del checkpoint

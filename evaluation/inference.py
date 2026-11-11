@@ -10,13 +10,20 @@ from modules.panorama import split_panorama
 
 
 def load_model(checkpoint, grid_path, model_name, device):
-    """Load the trained GeoSearchModel and its processor."""
+    """Load the GeoSearchModel (optionally with trained weights) and its processor."""
     grid = load_grid(grid_path)
 
     model = GeoSearchModel(grid, model_name=model_name)
+
     if checkpoint:
         state = torch.load(checkpoint, map_location="cpu", weights_only=True)
-        model.load_state_dict(state["model"])
+        # The geo head is not used for embeddings, and its layout differs
+        # between model versions, so it is skipped.
+        weights = {k: v for k, v in state["model"].items() if not k.startswith("geo_head.")}
+        missing, unexpected = model.load_state_dict(weights, strict=False)
+        missing = [k for k in missing if not k.startswith("geo_head.")]
+        if missing or unexpected:
+            raise RuntimeError(f"Checkpoint mismatch. Missing: {missing}, unexpected: {unexpected}")
 
     model = model.to(device).eval()
     processor = AutoProcessor.from_pretrained(model_name)

@@ -61,6 +61,7 @@ class Trainer:
             "geographic": torch.zeros((), device=self.device),
             "contrastive": torch.zeros((), device=self.device),
             "panorama_contrastive": torch.zeros((), device=self.device),
+            "semantic_contrastive": torch.zeros((), device=self.device),
         }
         batches = 0
         samples = 0
@@ -71,7 +72,8 @@ class Trainer:
             image_inputs = self._to_device(image_inputs)
             labels = labels.to(self.device, non_blocking=True)
             use_text = (self.loss_fn.contrastive_weight > 0
-                        or self.loss_fn.panorama_contrastive_weight > 0)
+                        or self.loss_fn.panorama_contrastive_weight > 0
+                        or self.loss_fn.semantic_token_loss_weight > 0)
             if use_text:
                 text_inputs = self._to_device(text_inputs)
                 positive_image_indices = positive_image_indices.to(self.device, non_blocking=True)
@@ -85,7 +87,7 @@ class Trainer:
                 enabled=self.device.type == "cuda",
             ):
                 if use_text:
-                    geo_logits, image_embeddings, text_embeddings = self.model(
+                    geo_logits, image_embeddings, text_embeddings, semantic_tokens = self.model.forward_for_training(
                         image_inputs, text_inputs, batch_size, num_views,
                     )
                 else:
@@ -94,6 +96,7 @@ class Trainer:
                         image_inputs, batch_size, num_views,
                     )
                     text_embeddings = None
+                    semantic_tokens = None
                 loss, parts = self.loss_fn(
                     geo_logits,
                     labels,
@@ -102,6 +105,7 @@ class Trainer:
                     positive_image_indices,
                     self.model.logit_scale,
                     self.model.logit_bias,
+                    semantic_tokens=semantic_tokens,
                 )
             
             loss.backward()
@@ -118,6 +122,7 @@ class Trainer:
             totals["geographic"] += parts["geographic"]
             totals["contrastive"] += parts["contrastive"]
             totals["panorama_contrastive"] += parts["panorama_contrastive"]
+            totals["semantic_contrastive"] += parts["semantic_contrastive"]
             batches += 1
             samples += batch_size
 
@@ -126,6 +131,7 @@ class Trainer:
                 geo=f"{parts['geographic'].item():.3f}",
                 contrast=f"{parts['contrastive'].item():.3f}",
                 pano=f"{parts['panorama_contrastive'].item():.3f}",
+                tokens=f"{parts['semantic_contrastive'].item():.3f}",
             )
 
         if batches == 0:

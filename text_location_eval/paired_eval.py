@@ -142,10 +142,16 @@ def main():
                         help="auto: prefer held-out and warn if only in-sample is possible")
     parser.add_argument("--prompts", type=int, nargs="+", choices=(1, 2, 3, 4), default=(1, 2, 3, 4))
     parser.add_argument("--aggregation", choices=("mean", "max"), default="mean")
+    parser.add_argument("--context-mix", type=float, default=1.0)
+    parser.add_argument("--semantic-view-mode", choices=("all", "crops", "tokens"), default="all")
+    parser.add_argument("--semantic-token-mix", type=float, default=None,
+                        help="Blend separate crop and semantic-token retrieval scores (0=crops, 1=tokens)")
     parser.add_argument("--top-k", type=int, default=10)
     parser.add_argument("--output", required=True)
     args = parser.parse_args()
-    if args.num_panoramas < 0 or args.seed < 0 or args.top_k < 1:
+    if (args.num_panoramas < 0 or args.seed < 0 or args.top_k < 1
+            or not 0 <= args.context_mix <= 1
+            or (args.semantic_token_mix is not None and not 0 <= args.semantic_token_mix <= 1)):
         parser.error("Counts and seed must be nonnegative, and --top-k must be positive")
     if args.split == "external" and not args.train_dataset:
         parser.error("--split external requires --train-dataset")
@@ -177,6 +183,9 @@ def main():
     searcher = GeoSearchInference(
         checkpoint=args.checkpoint, index=args.index, grid=args.grid,
         model_name=args.model, device=args.device, aggregation=args.aggregation,
+        context_mix=args.context_mix,
+        semantic_view_mode=args.semantic_view_mode,
+        semantic_token_mix=args.semantic_token_mix,
     )
     k = min(args.top_k, searcher.gallery_count)
     retrieved = searcher.retrieve_many([r["caption"] for r in caption_rows], top_k=k)
@@ -193,6 +202,9 @@ def main():
         "checkpoint": args.checkpoint, "index": args.index, "split": split,
         "num_panoramas": len(selected), "gallery_size": searcher.gallery_count,
         "aggregation": args.aggregation, "seed": args.seed, "top_k": k,
+        "context_mix": args.context_mix,
+        "semantic_view_mode": args.semantic_view_mode,
+        "semantic_token_mix": args.semantic_token_mix,
         **summarize_rows(results, k),
     }
     output = Path(args.output)

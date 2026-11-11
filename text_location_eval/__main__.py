@@ -45,6 +45,12 @@ def make_parser() -> argparse.ArgumentParser:
     retrieve.add_argument("--gallery-seed", type=int, default=42,
                           help="Seed for deterministic, nested gallery subsets")
     retrieve.add_argument("--aggregation", choices=["mean", "max"], default="mean")
+    retrieve.add_argument("--context-mix", type=float, default=1.0,
+                          help="Cross-view score mixing: 0=original crops, 1=contextualized (default)")
+    retrieve.add_argument("--semantic-view-mode", choices=["all", "crops", "tokens"], default="all",
+                          help="For semantic-token checkpoints: rank using both, original crops or learned tokens")
+    retrieve.add_argument("--semantic-token-mix", type=float, default=None,
+                          help="Optional score blend: 0=crops only, 1=semantic tokens only; default ranks all vectors together")
     retrieve.add_argument("--reference-chunk-size", type=int, default=2048)
     retrieve.add_argument("--text-batch-size", type=int, default=16)
     retrieve.add_argument("--limit-queries", type=int, default=0,
@@ -81,7 +87,9 @@ def main() -> None:
     elif args.command == "retrieve":
         if min(args.top_k, args.text_batch_size, args.reference_chunk_size) < 1 \
                 or args.controls < 0 or args.limit_queries < 0 \
-                or args.gallery_size < 0 or args.gallery_seed < 0:
+                or args.gallery_size < 0 or args.gallery_seed < 0 \
+                or not 0 <= args.context_mix <= 1 \
+                or (args.semantic_token_mix is not None and not 0 <= args.semantic_token_mix <= 1):
             parser.error("Invalid retrieval count/batch size")
         from .retrieval import retrieve
         retrieve(args)

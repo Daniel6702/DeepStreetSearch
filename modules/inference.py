@@ -19,10 +19,22 @@ def load_reference_index(path: str | Path) -> dict:
     if not isinstance(index, dict) or not {"signature", "records", "embeddings"} <= index.keys():
         raise ValueError(f"Invalid reference index: {path}")
     embeddings = index["embeddings"]
-    if embeddings.ndim != 3 or embeddings.shape[1] != 6:
-        raise ValueError("Index embeddings must have shape [panoramas, 6, dimensions]")
+    if embeddings.ndim != 3 or embeddings.shape[1] < 6:
+        raise ValueError("Index embeddings must have shape [panoramas, >=6, dimensions]")
     if len(index["records"]) != embeddings.shape[0]:
         raise ValueError("Reference index records and embeddings differ in length")
+    raw = index.get("raw_embeddings")
+    if raw is not None and (raw.ndim != 3 or raw.shape[0] != embeddings.shape[0]
+                            or raw.shape[1] != 6 or raw.shape[2] != embeddings.shape[2]):
+        raise ValueError("Index raw_embeddings must have shape [panoramas, 6, dimensions]")
+    # Check in bounded chunks so invalid cached indexes never silently return
+    # random rankings, without allocating a gallery-sized boolean tensor.
+    for name, tensor in (("embeddings", embeddings), ("raw_embeddings", raw)):
+        if tensor is None:
+            continue
+        for start in range(0, tensor.shape[0], 2048):
+            if not torch.isfinite(tensor[start:start + 2048]).all():
+                raise ValueError(f"{path}: {name} contain NaN/Inf; repair or rebuild the index")
     return index
 
 
@@ -70,16 +82,27 @@ class GeoSearchInference:
                  grid: str | Path, model_name: str,
                  device: str = "cuda", gallery_size: int | None = None,
                  gallery_seed: int = 42, aggregation: str = "mean",
+                 context_mix: float = 1.0,
+                 semantic_view_mode: str = "all",
+                 semantic_token_mix: float | None = None,
                  reference_chunk_size: int = 2048, text_batch_size: int = 16,
                  expected_signature: dict | None = None) -> None:
         import torch
         from transformers import AutoProcessor
 
         from adaptive_geogrid import load_grid
-        from modules.model import GeoSearchModel
+        from modules.model import GeoSearchModel, model_architecture_kwargs
 
         if aggregation not in {"mean", "max"}:
             raise ValueError("aggregation must be 'mean' or 'max'")
+        if not 0 <= context_mix <= 1:
+            raise ValueError("context_mix must be in [0, 1]")
+        if semantic_view_mode not in {"all", "crops", "tokens"}:
+            raise ValueError("semantic_view_mode must be all, crops, or tokens")
+        if semantic_token_mix is not None and not 0 <= semantic_token_mix <= 1:
+            raise ValueError("semantic_token_mix must be in [0, 1]")
+        if semantic_token_mix is not None and semantic_view_mode != "all":
+            raise ValueError("semantic_token_mix requires semantic_view_mode=all")
         if reference_chunk_size < 1 or text_batch_size < 1:
             raise ValueError("Batch and chunk sizes must be positive")
 
@@ -102,6 +125,9 @@ class GeoSearchInference:
                        if gallery_size is not None else None))
         self.gallery_count = len(self.gallery_indices)
         self.aggregation = aggregation
+        self.context_mix = context_mix
+        self.semantic_view_mode = semantic_view_mode
+        self.semantic_token_mix = semantic_token_mix
         self.reference_chunk_size = reference_chunk_size
         self.text_batch_size = text_batch_size
         self.device = device
@@ -113,14 +139,79 @@ class GeoSearchInference:
         train_config = checkpoint_data.get("run_config") or {}
         self.model = GeoSearchModel(
             load_grid(grid), model_name=model_name,
-            geo_head=train_config.get("geo_head", "linear"),
-            geo_pooling=train_config.get("geo_pooling", "mean"),
-            geo_view_dropout=train_config.get("geo_view_dropout", 0.0),
+            **model_architecture_kwargs(train_config),
         ).to(device).eval()
         self.model.load_state_dict(checkpoint_data["model"])
+        if self.model.retrieval_fusion == "cross_view" and "raw_embeddings" not in self.index:
+            raise ValueError("Cross-view checkpoint needs raw_embeddings in the index. Rebuild it.")
+        if context_mix != 1.0 and "raw_embeddings" not in self.index:
+            raise ValueError("context_mix < 1 requires a cross-view index with raw_embeddings")
+        if semantic_view_mode != "all" and self.model.retrieval_fusion != "semantic_tokens":
+            raise ValueError("semantic_view_mode crops/tokens requires a semantic_tokens checkpoint")
+        if semantic_token_mix is not None and self.model.retrieval_fusion != "semantic_tokens":
+            raise ValueError("semantic_token_mix requires a semantic_tokens checkpoint")
         del checkpoint_data
         self.processor = AutoProcessor.from_pretrained(model_name)
         self.text_limit = self.model.backbone.config.text_config.max_position_embeddings
+
+    def _selected_vectors(self, vectors):
+        # A single-photo query has no other views from which to construct
+        # semantic tokens; keep its image embedding as the query vector.
+        if vectors.shape[-2] < 6:
+            return vectors
+        if self.semantic_view_mode == "crops":
+            return vectors[..., :6, :]
+        if self.semantic_view_mode == "tokens":
+            return vectors[..., 6:, :]
+        return vectors
+
+    def _text_similarity(self, queries, views):
+        import torch
+        import torch.nn.functional as F
+
+        views = F.normalize(views.float(), dim=-1)
+        if self.aggregation == "mean":
+            return queries @ F.normalize(views.mean(dim=1), dim=-1).T
+        return torch.einsum("qd,nvd->qnv", queries, views).amax(dim=-1)
+
+    def _image_similarity(self, query, gallery):
+        import torch
+        import torch.nn.functional as F
+
+        query = F.normalize(query.float(), dim=-1)
+        gallery = F.normalize(gallery.float(), dim=-1)
+        if self.aggregation == "mean":
+            q = F.normalize(query.mean(dim=0, keepdim=True), dim=-1)
+            g = F.normalize(gallery.mean(dim=1), dim=-1)
+            return (q @ g.T).squeeze(0)
+        return torch.einsum("qd,nvd->qnv", query, gallery).amax(dim=(0, 2))
+
+    def _text_retrieval_scores(self, queries, vectors):
+        if self.semantic_token_mix is None:
+            return self._text_similarity(queries, self._selected_vectors(vectors))
+        alpha = self.semantic_token_mix
+        if alpha == 0:
+            return self._text_similarity(queries, vectors[:, :6])
+        if alpha == 1:
+            return self._text_similarity(queries, vectors[:, 6:])
+        crops = self._text_similarity(queries, vectors[:, :6])
+        tokens = self._text_similarity(queries, vectors[:, 6:])
+        return (1 - alpha) * crops + alpha * tokens
+
+    def _image_retrieval_scores(self, query, vectors):
+        if self.semantic_token_mix is None:
+            return self._image_similarity(self._selected_vectors(query),
+                                          self._selected_vectors(vectors))
+        alpha = self.semantic_token_mix
+        crop_query = query[:6] if query.shape[0] >= 6 else query
+        token_query = query[6:] if query.shape[0] > 6 else query
+        if alpha == 0:
+            return self._image_similarity(crop_query, vectors[:, :6])
+        if alpha == 1:
+            return self._image_similarity(token_query, vectors[:, 6:])
+        crops = self._image_similarity(crop_query, vectors[:, :6])
+        tokens = self._image_similarity(token_query, vectors[:, 6:])
+        return (1 - alpha) * crops + alpha * tokens
 
     def retrieve(self, query: str, top_k: int = 10) -> list[dict]:
         """Return the top-K georeferenced matches for one free-form query."""
@@ -170,12 +261,16 @@ class GeoSearchInference:
                         0, torch.tensor(ids_cpu, dtype=torch.long))
                     ids = torch.tensor(ids_cpu, device=self.device, dtype=torch.long)
 
-                crops = F.normalize(crops.float().to(self.device), dim=-1)
-                if self.aggregation == "mean":
-                    panorama_features = F.normalize(crops.mean(dim=1), dim=-1)
-                    scores = text_features @ panorama_features.T
-                else:
-                    scores = torch.einsum("qd,nvd->qnv", text_features, crops).amax(dim=-1)
+                scores = self._text_retrieval_scores(text_features, crops.to(self.device))
+                if self.context_mix < 1:
+                    if full_gallery:
+                        raw = self.index["raw_embeddings"][ids_cpu.start:ids_cpu.stop]
+                    else:
+                        raw = self.index["raw_embeddings"].index_select(
+                            0, torch.tensor(ids_cpu, dtype=torch.long))
+                    original_scores = self._text_similarity(text_features, raw.to(self.device))
+                    scores = (original_scores if self.context_mix == 0 else
+                              self.context_mix * scores + (1 - self.context_mix) * original_scores)
 
                 ids = ids.unsqueeze(0).expand(len(queries), -1)
                 merged_scores = torch.cat((best_scores, scores), dim=1)
@@ -224,8 +319,9 @@ class GeoSearchInference:
                 inputs = self.processor(images=crops, return_tensors="pt")
                 inputs = {key: value.to(self.device) for key, value in inputs.items()
                           if self.torch.is_tensor(value)}
-                logits, embeddings = self.model.encode_images(inputs, 1, len(crops))
-            return logits.float(), embeddings.float()
+                logits, embeddings, raw = self.model.encode_search_images(inputs, 1, len(crops))
+            return logits.float(), embeddings.squeeze(0).float(), (raw.squeeze(0).float()
+                                                                  if raw is not None else None)
         finally:
             for crop in crops:
                 if crop is not prepared:
@@ -245,12 +341,10 @@ class GeoSearchInference:
         if not 1 <= top_k <= self.gallery_count:
             raise ValueError(f"top_k must be between 1 and gallery size {self.gallery_count:,}")
 
-        _, features = self._encode_query_image(image, panorama=panorama)
+        _, features, original_features = self._encode_query_image(image, panorama=panorama)
         torch = self.torch
         with torch.inference_mode():
             query = F.normalize(features.to(self.device), dim=-1)
-            if self.aggregation == "mean":
-                query = F.normalize(query.mean(dim=0, keepdim=True), dim=-1)
 
             best_scores = torch.full((top_k,), -float("inf"), device=self.device)
             best_ids = torch.full((top_k,), -1, dtype=torch.long, device=self.device)
@@ -266,12 +360,17 @@ class GeoSearchInference:
                         0, torch.tensor(selected, dtype=torch.long))
                     ids = torch.tensor(selected, dtype=torch.long, device=self.device)
 
-                crops = F.normalize(crops.float().to(self.device), dim=-1)
-                if self.aggregation == "mean":
-                    gallery = F.normalize(crops.mean(dim=1), dim=-1)
-                    scores = (query @ gallery.T).squeeze(0)
-                else:
-                    scores = torch.einsum("qd,nvd->qnv", query, crops).amax(dim=(0, 2))
+                scores = self._image_retrieval_scores(query, crops.to(self.device))
+                if self.context_mix < 1:
+                    if full_gallery:
+                        raw_gallery = self.index["raw_embeddings"][start:stop]
+                    else:
+                        raw_gallery = self.index["raw_embeddings"].index_select(
+                            0, torch.tensor(selected, dtype=torch.long))
+                    raw_query = original_features if original_features is not None else features
+                    original_scores = self._image_similarity(raw_query, raw_gallery.to(self.device))
+                    scores = (original_scores if self.context_mix == 0 else
+                              self.context_mix * scores + (1 - self.context_mix) * original_scores)
 
                 scores, positions = torch.cat((best_scores, scores)).topk(top_k)
                 best_ids = torch.cat((best_ids, ids)).gather(0, positions)
@@ -303,7 +402,7 @@ class GeoSearchInference:
             points = tiles.geometry.representative_point()
             self._geo_centers = list(zip(points.y.to_numpy(), points.x.to_numpy()))
 
-        logits, _ = self._encode_query_image(image, panorama=panorama)
+        logits, _, _ = self._encode_query_image(image, panorama=panorama)
         probs = logits.softmax(dim=-1).squeeze(0)
         values, indices = probs.topk(min(top_k, len(self._geo_centers)))
         return [

@@ -47,8 +47,16 @@ def _load_parts(torch, directory: Path, signature: dict,
             raise ValueError(f"Index progress belongs to different settings: {path}")
         rows, vectors = part.get("records"), part.get("embeddings")
         if (not isinstance(rows, list) or vectors is None or vectors.ndim != 3
-                or vectors.shape[1] != 6 or len(rows) != vectors.shape[0]):
+                or vectors.shape[1] < 1 or len(rows) != vectors.shape[0]):
             raise ValueError(f"Invalid saved index part: {path}")
+        if not torch.isfinite(vectors).all():
+            raise ValueError(f"Saved index part contains NaN/Inf: {path}; rebuild this index")
+        raw = part.get("raw_embeddings")
+        if raw is not None and (raw.ndim != 3 or raw.shape[0] != len(rows)
+                                or raw.shape[1] != 6 or raw.shape[2] != vectors.shape[2]):
+            raise ValueError(f"Invalid saved raw embeddings: {path}")
+        if raw is not None and not torch.isfinite(raw).all():
+            raise ValueError(f"Saved raw index part contains NaN/Inf: {path}")
         ids = [row["image_id"] for row in rows]
         if len(set(ids)) != len(ids) or completed.intersection(ids):
             raise ValueError(f"Duplicate panorama IDs in saved part: {path}")
@@ -60,12 +68,15 @@ def _load_parts(torch, directory: Path, signature: dict,
 
 
 def _save_part(torch, path: Path, signature: dict,
-               records: list[dict], embeddings: list) -> None:
+               records: list[dict], embeddings: list,
+               raw_embeddings: list | None = None) -> None:
     """Commit a finished chunk atomically; interrupted .tmp files are ignored."""
     if not records or not embeddings:
         raise ValueError("Cannot save an empty index part")
     data = {"signature": signature, "records": records,
             "embeddings": torch.cat(embeddings, dim=0)}
+    if raw_embeddings:
+        data["raw_embeddings"] = torch.cat(raw_embeddings, dim=0)
     temporary = path.with_suffix(".tmp")
     torch.save(data, temporary)
     os.replace(temporary, path)
@@ -80,7 +91,7 @@ def build_index(args) -> None:
     from config import NUM_VIEWS
     from modules.dataset import PanoramaDataset
     from modules.dataset.shards import SOURCE_SHARD, image_key
-    from modules.model import GeoSearchModel
+    from modules.model import GeoSearchModel, model_architecture_kwargs
 
     output = Path(args.output)
     signature = expected_signature(args)
@@ -129,15 +140,13 @@ def build_index(args) -> None:
         train_config = checkpoint.get("run_config") or {}
         model = GeoSearchModel(
             grid, model_name=args.model,
-            geo_head=train_config.get("geo_head", "linear"),
-            geo_pooling=train_config.get("geo_pooling", "mean"),
-            geo_view_dropout=train_config.get("geo_view_dropout", 0.0),
+            **model_architecture_kwargs(train_config),
         ).to(args.device).eval()
         model.load_state_dict(checkpoint["model"])
         del checkpoint
         processor = AutoProcessor.from_pretrained(args.model)
 
-        embeddings, records = [], []
+        embeddings, raw_embeddings, records = [], [], []
         processed = len(completed)
         with torch.inference_mode():
             for crops_batch, metadata_batch in tqdm(loader, desc="Indexing panoramas",
@@ -148,8 +157,15 @@ def build_index(args) -> None:
                     views = [crop.image for crops in crops_batch for crop in crops]
                     inputs = processor(images=views, return_tensors="pt")
                     inputs = {k: v.to(args.device) for k, v in inputs.items() if torch.is_tensor(v)}
-                    _, features = model.encode_images(inputs, len(crops_batch), NUM_VIEWS)
-                    embeddings.append(features.reshape(len(crops_batch), NUM_VIEWS, -1).half().cpu())
+                    _, features, raw = model.encode_search_images(inputs, len(crops_batch), NUM_VIEWS)
+                    if not torch.isfinite(features).all():
+                        raise RuntimeError("Image encoder returned NaN/Inf retrieval vectors; "
+                                           "indexing stopped before saving corrupted results")
+                    if raw is not None and not torch.isfinite(raw).all():
+                        raise RuntimeError("Image encoder returned NaN/Inf raw vectors")
+                    embeddings.append(features.half().cpu())
+                    if raw is not None:
+                        raw_embeddings.append(raw.half().cpu())
 
                     for row in metadata_batch:
                         image_path = row.get("image_path", "")
@@ -170,31 +186,38 @@ def build_index(args) -> None:
                             crop.image.close()
                 if len(records) >= save_every:
                     part_path = parts_dir / f"part-{len(part_paths):06d}.pt"
-                    _save_part(torch, part_path, signature, records, embeddings)
+                    _save_part(torch, part_path, signature, records, embeddings, raw_embeddings)
                     part_paths.append(part_path)
                     processed += len(records)
                     print(f"Saved index progress: {processed:,}/{count:,} panoramas")
-                    records, embeddings = [], []
+                    records, embeddings, raw_embeddings = [], [], []
 
         if records:
             part_path = parts_dir / f"part-{len(part_paths):06d}.pt"
-            _save_part(torch, part_path, signature, records, embeddings)
+            _save_part(torch, part_path, signature, records, embeddings, raw_embeddings)
             part_paths.append(part_path)
             processed += len(records)
             print(f"Saved index progress: {processed:,}/{count:,} panoramas")
 
     # Merge the saved parts only after every panorama is safely on disk.
-    all_embeddings, all_records = [], []
+    all_embeddings, all_raw_embeddings, all_records = [], [], []
     for path in tqdm(part_paths, desc="Combining saved index parts"):
         part = torch.load(path, map_location="cpu", weights_only=True)
         all_embeddings.append(part["embeddings"])
+        if "raw_embeddings" in part:
+            all_raw_embeddings.append(part["raw_embeddings"])
         all_records.extend(part["records"])
     if len(all_records) != count or len({r["image_id"] for r in all_records}) != count:
         raise RuntimeError(f"Expected {count} unique panoramas, saved {len(all_records)}")
     index = {"signature": signature, "records": all_records,
              "embeddings": torch.cat(all_embeddings, dim=0)}
+    if all_raw_embeddings:
+        if len(all_raw_embeddings) != len(part_paths):
+            raise ValueError("Index has a mixture of raw and non-raw progress parts")
+        index["raw_embeddings"] = torch.cat(all_raw_embeddings, dim=0)
     output.parent.mkdir(parents=True, exist_ok=True)
     temporary = output.with_name(output.name + ".tmp")
     torch.save(index, temporary)
     os.replace(temporary, output)
-    print(f"Saved {count:,} panoramas / {count * NUM_VIEWS:,} crops to {output}")
+    print(f"Saved {count:,} panoramas / {index['embeddings'].shape[1]:,} "
+          f"retrieval vectors each to {output}")
